@@ -16,19 +16,17 @@ module Etlify
     end
 
     around_perform do |job, block|
-      begin
-        block.call
-      ensure
-        Etlify.config.cache_store.delete(enqueue_lock_key(job))
-      end
+      block.call
+    ensure
+      Etlify.config.cache_store.delete(enqueue_lock_key(job))
     end
 
-    def perform(record_class, id)
-      model  = record_class.constantize
-      record = model.find_by(id: id)
+    def perform(model_class_name, record_id, crm_name)
+      model  = model_class_name.constantize
+      record = model.find_by(id: record_id)
       return unless record
 
-      Etlify::Synchronizer.call(record)
+      Etlify::Synchronizer.call(record, crm: crm_name.to_sym)
     end
 
     private

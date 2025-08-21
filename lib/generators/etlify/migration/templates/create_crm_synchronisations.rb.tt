@@ -7,6 +7,7 @@ class <%= file_name.camelize %> < ActiveRecord::Migration[<%= ActiveRecord::VERS
       t.string   :last_digest
       t.datetime :last_synced_at
       t.string   :last_error
+      t.string   :crm
 
       t.timestamps
     end
@@ -16,5 +17,10 @@ class <%= file_name.camelize %> < ActiveRecord::Migration[<%= ActiveRecord::VERS
     add_index :crm_synchronisations, :last_synced_at
     add_index :crm_synchronisations, :resource_type
     add_index :crm_synchronisations, :resource_id
+    add_index (
+      :crm_synchronisations,
+      [:crm_name, :resource_type, :resource_id],
+      name: "idx_crm_sync_on_crm_and_resource"
+    )
   end
 end
