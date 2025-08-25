@@ -103,8 +103,8 @@ module Etlify
       crm_synchronisation.present?
     end
 
-    def build_crm_payload(crm:)
-      raise_unless_crm_is_configured(crm)
+    def build_crm_payload(crm_name:)
+      raise_unless_crm_is_configured(crm_name)
 
       conf = self.class.etlify_crms.fetch(crm.to_sym)
       serializer = conf[:serializer].new(self).as_crm_payload
@@ -121,42 +121,42 @@ module Etlify
     # @param crm [Symbol] which CRM to use
     # @param async [Boolean] whether to enqueue or run inline
     # @param job_class [Class,String,nil] explicit override
-    def crm_sync!(crm:, async: true, job_class: nil)
-      return false unless allow_sync_for?(crm)
+    def crm_sync!(crm_name:, async: true, job_class: nil)
+      return false unless allow_sync_for?(crm_name)
 
       if async
-        jc = resolve_job_class_for(crm, override: job_class)
+        jc = resolve_job_class_for(crm_name, override: job_class)
         if jc.respond_to?(:perform_later)
-          jc.perform_later(self.class.name, id, crm.to_s)
+          jc.perform_later(self.class.name, id, crm_name.to_s)
         elsif jc.respond_to?(:perform_async)
-          jc.perform_async(self.class.name, id, crm.to_s)
+          jc.perform_async(self.class.name, id, crm_name.to_s)
         else
           raise ArgumentError, "No job class available for CRM sync"
         end
       else
-        Etlify::Synchronizer.call(self, crm: crm)
+        Etlify::Synchronizer.call(self, crm_name: crm_name)
       end
     end
 
-    def crm_delete!(crm:)
-      Etlify::Deleter.call(self, crm: crm)
+    def crm_delete!(crm_name:)
+      Etlify::Deleter.call(self, crm_name: crm_name)
     end
 
     private
 
     # Guard evaluation per CRM
-    def allow_sync_for?(crm)
-      conf = self.class.etlify_crms[crm.to_sym]
+    def allow_sync_for?(crm_name)
+      conf = self.class.etlify_crms[crm_name.to_sym]
       return false unless conf
 
       guard = conf[:guard]
       guard ? guard.call(self) : true
     end
 
-    def resolve_job_class_for(crm, override:)
+    def resolve_job_class_for(crm_name, override:)
       return constantize_if_needed(override) if override
 
-      conf = self.class.etlify_crms.fetch(crm.to_sym)
+      conf = self.class.etlify_crms.fetch(crm_name.to_sym)
       given = conf[:job_class]
       return constantize_if_needed(given) if given
 
@@ -170,9 +170,9 @@ module Etlify
       klass_or_name.constantize
     end
 
-    def raise_unless_crm_is_configured(crm)
-      unless self.class.etlify_crms && self.class.etlify_crms[crm.to_sym]
-        raise ArgumentError, "crm not configured for #{crm}"
+    def raise_unless_crm_is_configured(crm_name)
+      unless self.class.etlify_crms && self.class.etlify_crms[crm_name.to_sym]
+        raise ArgumentError, "crm not configured for #{crm_name}"
       end
     end
   end

@@ -6,7 +6,8 @@ class CrmSynchronisation < ApplicationRecord
   validates :crm_id, uniqueness: true, allow_nil: true
   validates :resource_type, presence: true
   validates :resource_id, presence: true
-  validates :resource_id, uniqueness: { scope: :resource_type }
+  validates :resource_id, uniqueness: {scope: [:resource_type, :crm_name]}
+  validates :crm_name, presence: true, uniqueness: {scope: :resource}
 
   def stale?(digest)
     last_digest != digest

@@ -9,46 +9,47 @@ module Etlify
       # Public: Run a batch sync over all stale records.
       #
       # models:     Optional Array<Class> to restrict scanned models.
+      # crm_name:   Optional Symbol/String; restrict processing to this CRM.
       # async:      true => enqueue jobs; false => perform inline.
       # batch_size: # of ids per batch.
-      # throttle:   Optional Float (seconds) to sleep between processed records.
-      # dry_run:    If true, compute counts but do not enqueue/perform.
-      # logger:     IO-like logger; defaults to Etlify.config.logger.
       #
       # Returns a Hash with :total, :per_model, :errors.
       def self.call(models: nil,
-                    async: true,
-                    batch_size: DEFAULT_BATCH_SIZE,
-                    throttle: nil,
-                    dry_run: false,
-                    logger: Etlify.config.logger)
+        crm_name: nil,
+        async: true,
+        batch_size: DEFAULT_BATCH_SIZE)
         new(
           models: models,
+          crm_name: crm_name,
           async: async,
-          batch_size: batch_size,
-          throttle: throttle,
-          dry_run: dry_run,
-          logger: logger
+          batch_size: batch_size
         ).call
       end
 
-      def initialize(models:, async:, batch_size:, throttle:, dry_run:, logger:)
+      def initialize(models:, crm_name:, async:, batch_size:)
         @models     = models
-        @async      = async
+        @crm_name   = crm_name&.to_sym
+        @async      = !!async
         @batch_size = Integer(batch_size)
-        @throttle   = throttle
-        @dry_run    = !!dry_run
-        @logger     = logger || Etlify.config.logger
       end
 
       def call
-        stats = { total: 0, per_model: {}, errors: 0 }
+        stats = {total: 0, per_model: {}, errors: 0}
 
-        Finder.call(models: @models).each do |model, rel|
-          processed = process_model(model, rel)
-          stats[:per_model][model.name] = processed[:count]
-          stats[:total] += processed[:count]
-          stats[:errors] += processed[:errors]
+        # Finder returns: { ModelClass => { crm_sym => relation(ids-only) } }
+        Finder.call(models: @models, crm_name: @crm_name).each do |model, per_crm|
+          model_count  = 0
+          model_errors = 0
+
+          per_crm.each do |crm, relation|
+            processed = process_model(model, relation, crm_name: crm)
+            model_count  += processed[:count]
+            model_errors += processed[:errors]
+          end
+
+          stats[:per_model][model.name] = model_count
+          stats[:total]  += model_count
+          stats[:errors] += model_errors
         end
 
         stats
@@ -56,66 +57,39 @@ module Etlify
 
       private
 
-      # Process one model's stale relation (ids-only relation).
-      def process_model(model, relation)
+      # Process one model's stale relation (ids-only relation) for a given CRM.
+      def process_model(model, relation, crm_name:)
         count  = 0
         errors = 0
         pk     = model.primary_key.to_sym
 
-        # Pull ids in batches to avoid loading full records in async mode.
         relation.in_batches(of: @batch_size) do |batch_rel|
           ids = batch_rel.pluck(pk)
           next if ids.empty?
 
-          if @dry_run
-            count += ids.size
-            next
-          end
-
           if @async
-            enqueue_async(model, ids)
+            enqueue_async(model, ids, crm_name: crm_name)
             count += ids.size
           else
             # Load full records only when performing inline.
             model.where(pk => ids).find_each(batch_size: @batch_size) do |rec|
-              begin
-                Etlify::Synchronizer.call(rec)
-                count += 1
-                sleep(@throttle) if @throttle
-              rescue StandardError => e
-                log_error(model, rec.id, e)
-                errors += 1
-              end
+              Etlify::Synchronizer.call(rec, crm_name: crm_name)
+              count += 1
+            rescue
+              # Count and continue; no logging by design.
+              errors += 1
             end
           end
         end
 
-        { count: count, errors: errors }
+        {count: count, errors: errors}
       end
 
       # Enqueue one job per id without loading the records.
-      def enqueue_async(model, ids)
-        job_klass = resolve_job_class
+      def enqueue_async(model, ids, crm_name:)
         ids.each do |id|
-          job_klass.perform_later(model.name, id)
-          sleep(@throttle) if @throttle
+          Etlify::SyncJob.perform_later(model.name, id, crm_name.to_s)
         end
-      rescue StandardError => e
-        # If enqueue fails at the batch level, log and re-raise for visibility.
-        @logger.error("[Etlify] enqueue failure for #{model.name}: #{e.message}")
-        raise
-      end
-
-      def resolve_job_class
-        klass = Etlify.config.sync_job_class
-        klass.is_a?(String) ? klass.constantize : klass
-      end
-
-      def log_error(model, id, error)
-        @logger.error(
-          "[Etlify] sync failure #{model.name}(id=#{id}): #{error.class} " \
-          "#{error.message}"
-        )
       end
     end
   end

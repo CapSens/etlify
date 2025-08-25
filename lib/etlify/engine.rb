@@ -11,7 +11,7 @@ module Etlify
             CrmSynchronisation.table_exists? &&
             !CrmSynchronisation.column_names.include?("crm_name")
           raise(
-            Etlify::Errors::MissingColumnError,
+            Etlify::MissingColumnError,
             <<~MSG.squish
               Missing column "crm_name" on table "crm_synchronisations".
               Please generate a migration with:

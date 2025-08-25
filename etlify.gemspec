@@ -16,7 +16,7 @@ Gem::Specification.new do |spec|
   ).select { |f| File.file?(f) } + %w[README.md]
   spec.require_paths = ["lib"]
 
-  spec.add_dependency "rails", ">= 7.0", "< 8"
+  spec.add_dependency "rails", ">= 7.2", "< 8"
   spec.add_development_dependency "rspec", "~> 3.13"
   spec.add_development_dependency "rspec-rails", "~> 6.1"
   spec.add_development_dependency "sqlite3", "~> 2.7"

@@ -2,62 +2,96 @@ module Etlify
   module StaleRecords
     class Finder
       class << self
-        # Public: Build a Hash of { ModelClass => ActiveRecord::Relation (ids only) }
-        # models - Optional array of model classes to restrict the search.
+        # Public: Build a nested Hash of
+        #   { ModelClass => { crm_sym => ActiveRecord::Relation(ids only) } }
+        # models   - Optional Array of model classes to restrict the search.
+        # crm_name - Optional Symbol/String to target a single CRM.
         # Returns a Hash.
-        def call(models: nil)
-          targets = models || etlified_models
-          targets.each_with_object({}) do |model, h|
+        def call(models: nil, crm_name: nil)
+          targets = models || etlified_models(crm_name: crm_name)
+          targets.each_with_object({}) do |model, out|
             next unless model.table_exists?
 
-            h[model] = stale_relation_for(model)
+            crms = configured_crm_names_for(model, crm_name: crm_name)
+            next if crms.empty?
+
+            out[model] = crms.each_with_object({}) do |crm, per_crm|
+              per_crm[crm] = stale_relation_for(model, crm_name: crm)
+            end
           end
         end
 
         private
 
-        # Detect models that actually called `etlified_with`.
-        def etlified_models
+        # Detect models that included Etlify::Model and have at least one CRM
+        # configured (optionally filtered by crm_name).
+        def etlified_models(crm_name: nil)
           ActiveRecord::Base.descendants.select do |m|
             next false unless m.respond_to?(:table_exists?) && m.table_exists?
+            next false unless m.respond_to?(:etlify_crms) && m.etlify_crms.present?
 
-            m.respond_to?(:etlify_crm_object_type) &&
-              m.etlify_crm_object_type.present?
+            if crm_name
+              m.etlify_crms.key?(crm_name.to_sym)
+            else
+              m.etlify_crms.any?
+            end
           end
         end
 
-        # Build the relation returning only PKs for stale/missing crm sync rows.
-        def stale_relation_for(model)
-          conn = model.connection
-          epoch = epoch_literal(conn)
+        # List configured CRM names for a model (optionally filtered).
+        def configured_crm_names_for(model, crm_name: nil)
+          return [] unless model.respond_to?(:etlify_crms) && model.etlify_crms.present?
+          return [crm_name.to_sym] if crm_name && model.etlify_crms.key?(crm_name.to_sym)
 
-          threshold_sql = latest_timestamp_sql(model, epoch)
+          model.etlify_crms.keys
+        end
 
-          crm_tbl = CrmSynchronisation.table_name
-          crm_last_synced =
-            "COALESCE(#{quoted(crm_tbl, 'last_synced_at', conn)}, #{epoch})"
+        # Build the relation returning only PKs for stale/missing sync rows
+        # for the given CRM. The JOIN is scoped by crm_name.
+        def stale_relation_for(model, crm_name:)
+          conn      = model.connection
+          owner_tbl = model.table_name
+          owner_pk  = model.primary_key
+          crm_tbl   = CrmSynchronisation.table_name
+          epoch     = epoch_literal(conn)
+
+          threshold_sql = latest_timestamp_sql(model, epoch, crm_name: crm_name)
+
+          # Scope the LEFT OUTER JOIN to the specific crm_name and owner row.
+          join_on = [
+            "#{quoted(crm_tbl, 'resource_type', conn)} = #{conn.quote(model.name)}",
+            "#{quoted(crm_tbl, 'resource_id', conn)} = " \
+              "#{quoted(owner_tbl, owner_pk, conn)}",
+            "#{quoted(crm_tbl, 'crm_name', conn)} = #{conn.quote(crm_name.to_s)}",
+          ].join(" AND ")
+
+          last_synced = "COALESCE(#{quoted(crm_tbl, 'last_synced_at', conn)}, #{epoch})"
 
           where_sql = <<-SQL.squish
-            #{quoted(crm_tbl, 'id', conn)} IS NULL OR
-            #{crm_last_synced} < (#{threshold_sql})
+            #{quoted(crm_tbl, 'id', conn)} IS NULL
+            OR #{last_synced} < (#{threshold_sql})
           SQL
 
           model
-            .left_outer_joins(:crm_synchronisation)
+            .joins("LEFT OUTER JOIN #{conn.quote_table_name(crm_tbl)} ON #{join_on}")
             .where(Arel.sql(where_sql))
-            .select(model.arel_table[model.primary_key])
+            .select(model.arel_table[owner_pk])
         end
 
-        # Build SQL for the "latest updated_at" across record and its deps.
-        def latest_timestamp_sql(model, epoch)
-          conn = model.connection
+        # Build SQL for "latest updated_at" across record and its CRM-specific deps.
+        def latest_timestamp_sql(model, epoch, crm_name:)
+          conn      = model.connection
           owner_tbl = model.table_name
 
           parts = [
             "COALESCE(#{quoted(owner_tbl, 'updated_at', conn)}, #{epoch})",
           ]
 
-          Array(model.try(:etlify_dependencies)).each do |dep_name|
+          deps = Array(
+            model.etlify_crms.dig(crm_name.to_sym, :dependencies)
+          ).map(&:to_sym)
+
+          deps.each do |dep_name|
             reflection = model.reflect_on_association(dep_name)
             next unless reflection
 
@@ -80,7 +114,7 @@ module Etlify
 
         # Non-through associations.
         def direct_dependency_timestamp_sql(model, reflection, epoch)
-          conn = model.connection
+          conn      = model.connection
           owner_tbl = model.table_name
 
           case reflection.macro
@@ -97,7 +131,6 @@ module Etlify
               LIMIT 1
             SQL
             "COALESCE((#{sub}), #{epoch})"
-
           when :has_one, :has_many
             dep_tbl = reflection.klass.table_name
             fk      = reflection.foreign_key
@@ -118,14 +151,13 @@ module Etlify
               WHERE #{preds.map { |p| "(#{p})" }.join(' AND ')}
             SQL
             "COALESCE((#{sub}), #{epoch})"
-
           else
             # Unknown macro: safely ignore with epoch fallback.
             epoch
           end
         end
 
-        # has_* :through => build a correlated subquery joining through->source.
+        # has_* :through => correlated subquery from through -> source.
         def through_dependency_timestamp_sql(model, reflection, epoch)
           conn       = model.connection
           through    = reflection.through_reflection
@@ -136,7 +168,6 @@ module Etlify
           source_pk   = reflection.klass.primary_key
           owner_tbl   = model.table_name
 
-          # Filter "through" rows that point to the owner.
           preds = []
           preds << "#{quoted(through_tbl, through.foreign_key, conn)} = " \
                    "#{quoted(owner_tbl, model.primary_key, conn)}"
@@ -176,7 +207,7 @@ module Etlify
           "COALESCE((#{sub}), #{epoch})"
         end
 
-        # Polymorphic belongs_to: enumerate concrete types present in data.
+        # belongs_to polymorphic: enumerate concrete types and pick greatest ts.
         def polymorphic_belongs_to_timestamp_sql(model, reflection, epoch)
           conn      = model.connection
           owner_tbl = model.table_name
@@ -212,8 +243,7 @@ module Etlify
 
         # Adapter portability helpers.
         def greatest(parts, conn)
-          # If there is only one expression, return it as-is to avoid SQLite
-          # interpreting MAX(expr) as an aggregate in WHERE.
+          # With a single expression, return as-is (SQLite aggregate quirk).
           return parts.first if parts.size == 1
 
           fn = greatest_function_name(conn)

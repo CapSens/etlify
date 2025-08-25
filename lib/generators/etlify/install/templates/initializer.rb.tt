@@ -1,0 +1,24 @@
+require "etlify"
+
+Etlify.configure do |config|
+  # Register CRM likewise:
+    Etlify::CRM.register(
+      :hubspot, adapter: Etlify::Adapters::HubspotV3Adapter,
+      options: { job_class: Etlify::SyncJob }
+    )
+    # will provide DSL below for models
+    # hubspot_etlified_with(...)
+
+    # Etlify::CRM.register(
+    #   :another_crm, adapter: Etlify::Adapters::AnotherAdapter,
+    #   options: { job_class: Etlify::SyncJob }
+    # )
+    # will provide DSL below for models
+    # another_crm_etlified_with(...)
+
+  # overridable defaults config
+  # @job_queue_name = "low"
+  # @digest_strategy = Etlify::Digest.method(:stable_sha256)
+  # @logger = defined?(Rails) ? Rails.logger : Logger.new($stdout)
+  # @cache_store = Rails.cache
+end

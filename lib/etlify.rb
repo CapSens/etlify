@@ -7,7 +7,7 @@ require "logger"
 
 require_relative "etlify/version"
 require_relative "etlify/config"
-require_relative "etlify/errors"
+require_relative "etlify/error"
 require_relative "etlify/digest"
 require_relative "etlify/crm"
 require_relative "etlify/model"
@@ -22,9 +22,6 @@ require_relative "generators/etlify/install/install_generator"
 require_relative "generators/etlify/migration/migration_generator"
 require_relative "generators/etlify/serializer/serializer_generator"
 
-require_relative "etlify/railtie" if defined?(Rails)
-require_relative "etlify/engine"  if defined?(Rails)
-
 module Etlify
   class << self
     def config
@@ -36,3 +33,7 @@ module Etlify
     end
   end
 end
+
+require_relative "../app/jobs/etlify/sync_job"
+require_relative "etlify/railtie" if defined?(Rails)
+require_relative "etlify/engine"  if defined?(Rails)
