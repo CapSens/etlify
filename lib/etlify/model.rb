@@ -69,7 +69,8 @@ module Etlify
         end
       end
 
-      # Define instance helpers: "<crm>_build_payload", "<crm>_sync!", "<crm>_delete!"
+      # Define instance helpers: "<crm>_build_payload", "<crm>_sync!",
+      # "<crm>_delete!"
       def define_crm_instance_helpers_on(klass, crm_name)
         payload_m = "#{crm_name}_build_payload"
         sync_m    = "#{crm_name}_sync!"
@@ -77,19 +78,19 @@ module Etlify
 
         unless klass.method_defined?(payload_m)
           klass.define_method(payload_m) do
-            build_crm_payload(crm: crm_name)
+            build_crm_payload(crm_name: crm_name)
           end
         end
 
         unless klass.method_defined?(sync_m)
           klass.define_method(sync_m) do |async: true, job_class: nil|
-            crm_sync!(crm: crm_name, async: async, job_class: job_class)
+            crm_sync!(crm_name: crm_name, async: async, job_class: job_class)
           end
         end
 
         unless klass.method_defined?(delete_m)
           klass.define_method(delete_m) do
-            crm_delete!(crm: crm_name)
+            crm_delete!(crm_name: crm_name)
           end
         end
       end
@@ -103,17 +104,26 @@ module Etlify
       crm_synchronisation.present?
     end
 
-    def build_crm_payload(crm_name:)
+    # Accept both crm_name: and crm: for backward compatibility.
+    def build_crm_payload(crm_name: nil, crm: nil)
+      crm_name ||= crm
+      raise ArgumentError, "crm_name is required" if crm_name.nil?
+
       raise_unless_crm_is_configured(crm_name)
 
       conf = self.class.etlify_crms.fetch(crm_name.to_sym)
       conf[:serializer].new(self).as_crm_payload
     end
 
-    # @param crm [Symbol] which CRM to use
+    # @param crm_name [Symbol] which CRM to use
     # @param async [Boolean] whether to enqueue or run inline
     # @param job_class [Class,String,nil] explicit override
-    def crm_sync!(crm_name:, async: true, job_class: nil)
+    #
+    # Accept both crm_name: and crm: for backward compatibility.
+    def crm_sync!(crm_name: nil, async: true, job_class: nil, crm: nil)
+      crm_name ||= crm
+      raise ArgumentError, "crm_name is required" if crm_name.nil?
+
       return false unless allow_sync_for?(crm_name)
 
       if async
@@ -130,7 +140,11 @@ module Etlify
       end
     end
 
-    def crm_delete!(crm_name:)
+    # Accept both crm_name: and crm: for backward compatibility.
+    def crm_delete!(crm_name: nil, crm: nil)
+      crm_name ||= crm
+      raise ArgumentError, "crm_name is required" if crm_name.nil?
+
       Etlify::Deleter.call(self, crm_name: crm_name)
     end
 
