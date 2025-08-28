@@ -1,8 +1,8 @@
 PATH
   remote: .
   specs:
-    etlify (0.6.0)
-      rails (>= 7.2, < 8)
+    etlify (1.0.0.beta1)
+      rails (>= 7.0)
 
 GEM
   remote: https://rubygems.org/
@@ -277,11 +277,8 @@ PLATFORMS
   x86_64-linux-musl
 
 DEPENDENCIES
-  activejob (>= 7.0)
-  activerecord (>= 7.0)
-  activesupport (>= 7.0)
   etlify!
-  rails (~> 7.1)
+  rails (~> 7.2)
   rspec (~> 3.13)
   rspec-rails (~> 6.1)
   rubocop (~> 1.79)

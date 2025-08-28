@@ -1,14 +1,31 @@
+# lib/etlify/model.rb
 module Etlify
   module Model
     extend ActiveSupport::Concern
 
     included do
-      # Track classes that included this concern to backfill DSL on register.
+      # Track including classes for DSL backfill.
       Etlify::Model.__included_klasses__ << self
 
-      # Hash keyed by CRM name, with config per CRM
+      # Per-CRM configuration storage.
       class_attribute :etlify_crms, instance_writer: false, default: {}
 
+      # Declare associations only for ActiveRecord models.
+      if defined?(ActiveRecord::Base) && self < ActiveRecord::Base
+        if respond_to?(:reflect_on_association) &&
+            !reflect_on_association(:crm_synchronisations)
+          has_many(
+            :crm_synchronisations,
+            -> { order(id: :asc) },
+            class_name: "CrmSynchronisation",
+            as: :resource,
+            dependent: :destroy,
+            inverse_of: :resource
+          )
+        end
+      end
+
+      # Install DSL and instance helpers for already-registered CRMs.
       Etlify::CRM.names.each do |crm_name|
         Etlify::Model.define_crm_dsl_on(self, crm_name)
         Etlify::Model.define_crm_instance_helpers_on(self, crm_name)
@@ -16,12 +33,10 @@ module Etlify
     end
 
     class << self
-      # Internal: store all including classes
       def __included_klasses__
         @__included_klasses__ ||= []
       end
 
-      # Called by Etlify::CRM.register to (re)install DSL on all classes
       def install_dsl_for_crm(crm_name)
         __included_klasses__.each do |klass|
           define_crm_dsl_on(klass, crm_name)
@@ -29,11 +44,8 @@ module Etlify
         end
       end
 
-      # Define the class-level DSL method: "<crm>_etlified_with"
       def define_crm_dsl_on(klass, crm_name)
         dsl_name = "#{crm_name}_etlified_with"
-
-        # Avoid redefining if already defined
         return if klass.respond_to?(dsl_name)
 
         klass.define_singleton_method(dsl_name) do |
@@ -44,10 +56,8 @@ module Etlify
           sync_if: ->(_r) { true },
           job_class: nil
         |
-          # Fetch registered CRM (adapter, options)
           reg = Etlify::CRM.fetch(crm_name)
 
-          # Merge model-level config for this CRM
           conf = {
             serializer: serializer,
             guard: sync_if,
@@ -55,22 +65,17 @@ module Etlify
             id_property: id_property,
             dependencies: Array(dependencies).map(&:to_sym),
             adapter: reg.adapter,
-            # Job class priority: method arg > registry options > nil
             job_class: job_class || reg.options[:job_class],
           }
 
-          # Store into class attribute hash
           new_hash = (etlify_crms || {}).dup
           new_hash[crm_name.to_sym] = conf
           self.etlify_crms = new_hash
 
-          # Ensure instance helpers exist
           Etlify::Model.define_crm_instance_helpers_on(self, crm_name)
         end
       end
 
-      # Define instance helpers: "<crm>_build_payload", "<crm>_sync!",
-      # "<crm>_delete!"
       def define_crm_instance_helpers_on(klass, crm_name)
         payload_m = "#{crm_name}_build_payload"
         sync_m    = "#{crm_name}_sync!"
@@ -93,18 +98,38 @@ module Etlify
             crm_delete!(crm_name: crm_name)
           end
         end
+
+        unless klass.method_defined?("registered_crms")
+          klass.define_method("registered_crms") do
+            self.class.etlify_crms.keys.map(&:to_s)
+          end
+        end
+
+        # Define filtered has_one only for AR models.
+        if defined?(ActiveRecord::Base) && klass < ActiveRecord::Base
+          assoc_name = :"#{crm_name}_crm_synchronisation"
+          if klass.respond_to?(:reflect_on_association) &&
+              !klass.reflect_on_association(assoc_name)
+            klass.has_one(
+              assoc_name,
+              -> { where(crm_name: crm_name.to_s) },
+              class_name: "CrmSynchronisation",
+              as: :resource,
+              dependent: :destroy,
+              inverse_of: :resource
+            )
+          end
+        end
       end
     end
 
-    # ---------- Public generic API (now CRM-aware) ----------
+    # ---------- Public generic API (CRM-aware) ----------
 
     def crm_synced?(crm: nil)
-      # If you have per-CRM synchronisation records, adapt accordingly.
-      # For now keep a single association; adjust when your schema changes.
-      crm_synchronisation.present?
+      # Keep backward-compatible single-sync check if association exists.
+      respond_to?(:crm_synchronisation) && crm_synchronisation.present?
     end
 
-    # Accept both crm_name: and crm: for backward compatibility.
     def build_crm_payload(crm_name: nil, crm: nil)
       crm_name ||= crm
       raise ArgumentError, "crm_name is required" if crm_name.nil?
@@ -115,15 +140,9 @@ module Etlify
       conf[:serializer].new(self).as_crm_payload
     end
 
-    # @param crm_name [Symbol] which CRM to use
-    # @param async [Boolean] whether to enqueue or run inline
-    # @param job_class [Class,String,nil] explicit override
-    #
-    # Accept both crm_name: and crm: for backward compatibility.
     def crm_sync!(crm_name: nil, async: true, job_class: nil, crm: nil)
       crm_name ||= crm
       raise ArgumentError, "crm_name is required" if crm_name.nil?
-
       return false unless allow_sync_for?(crm_name)
 
       if async
@@ -140,7 +159,6 @@ module Etlify
       end
     end
 
-    # Accept both crm_name: and crm: for backward compatibility.
     def crm_delete!(crm_name: nil, crm: nil)
       crm_name ||= crm
       raise ArgumentError, "crm_name is required" if crm_name.nil?
@@ -150,7 +168,6 @@ module Etlify
 
     private
 
-    # Guard evaluation per CRM
     def allow_sync_for?(crm_name)
       conf = self.class.etlify_crms[crm_name.to_sym]
       return false unless conf
@@ -166,7 +183,6 @@ module Etlify
       given = conf[:job_class]
       return constantize_if_needed(given) if given
 
-      # Fallback to default sync job name if you want one
       constantize_if_needed("Etlify::SyncJob")
     end
 

@@ -17,7 +17,7 @@ module Etlify
       @resource = resource
       @crm_name = crm_name.to_sym
       @conf    = resource.class.etlify_crms.fetch(@crm_name)
-      @adapter = @conf[:adapter].new
+      @adapter = @conf[:adapter]
     end
 
     def call
@@ -43,7 +43,7 @@ module Etlify
           :not_modified
         end
       end
-    rescue => e
+    rescue StandardError => e
       sync_line.update!(last_error: e.message)
 
       :error

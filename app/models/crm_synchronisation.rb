@@ -1,4 +1,4 @@
-class CrmSynchronisation < ApplicationRecord
+class CrmSynchronisation < ActiveRecord::Base
   self.table_name = "crm_synchronisations"
 
   belongs_to :resource, polymorphic: true

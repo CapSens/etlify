@@ -44,32 +44,25 @@ RSpec.describe Etlify::Deleter do
     it "calls adapter.delete! with params and returns :deleted" do
       line = create_line(user, crm_name: "hubspot", crm_id: "crm-123")
 
-      calls = []
-      adapter = Class.new do
-        # Capture arguments to verify them later
+      adapter_class = Class.new do
+        # Keep English comments and ≤85 chars per line
         define_method(:delete!) do |crm_id:, object_type:, id_property:|
-          ObjectSpace.each_object(Array).find do |arr|
-            arr.equal?(calls = arr) # no-op to silence linter
-          end
           true
         end
       end
+      adapter_instance = adapter_class.new
 
-      # Replace adapter for this example to observe args
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: adapter,
+            adapter: adapter_instance,
             id_property: "id",
             crm_object_type: "contacts",
           },
         }
       )
 
-      # Spy on a real instance to check args
-      instance = adapter.new
-      allow(adapter).to receive(:new).and_return(instance)
-      expect(instance).to receive(:delete!).with(
+      expect(adapter_instance).to receive(:delete!).with(
         crm_id: "crm-123",
         object_type: "contacts",
         id_property: "id"
@@ -77,8 +70,6 @@ RSpec.describe Etlify::Deleter do
 
       res = described_class.call(user, crm_name: :hubspot)
       expect(res).to eq(:deleted)
-
-      # Ensure sync line not altered by the deleter itself.
       expect(line.reload.crm_id).to eq("crm-123")
     end
   end
@@ -94,7 +85,7 @@ RSpec.describe Etlify::Deleter do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: FailingDeleteAdapter,
+            adapter: FailingDeleteAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
           },

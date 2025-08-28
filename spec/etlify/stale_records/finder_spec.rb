@@ -71,6 +71,12 @@ RSpec.describe Etlify::StaleRecords::Finder do
         t.integer :project_id
         t.timestamps null: true
       end
+
+      create_table :subscriptions, force: true do |t|
+        # FK lives on the source table -> references profiles.id
+        t.integer :users_profile_id
+        t.timestamps null: true
+      end
     end
 
     User.reset_column_information
@@ -125,6 +131,20 @@ RSpec.describe Etlify::StaleRecords::Finder do
     define_model_const("Document")
     define_model_const("Tag")
 
+    define_model_const("Subscription") do |k|
+      # Source holds the FK to through table (profiles)
+      k.belongs_to :profile,
+                  foreign_key: "users_profile_id",
+                  optional: true
+    end
+
+    Profile.class_eval do
+      has_many :subscriptions,
+              class_name: "Subscription",
+              foreign_key: "users_profile_id",
+              dependent: :destroy
+    end
+
     # Reopen User to add associations used by tests
     User.class_eval do
       has_one :profile, dependent: :destroy
@@ -137,6 +157,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
       has_and_belongs_to_many :tags, join_table: "tags_users"
       has_many :linkages, as: :owner, dependent: :destroy
       has_many :poly_projects, through: :linkages, source: :project
+      has_many :subscriptions, through: :profile
     end
   end
 
@@ -442,9 +463,39 @@ RSpec.describe Etlify::StaleRecords::Finder do
       expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
         .pluck(:id)).to include(u.id)
     end
+
+    describe "has_many :through where FK lives on source table" do
+      it "marks owner stale when a source row becomes newer" do
+        # Configure Finder to track :subscriptions for this CRM
+        allow(User).to receive(:etlify_crms).and_return(
+          {
+            hubspot: {
+              adapter: Etlify::Adapters::NullAdapter,
+              id_property: "id",
+              crm_object_type: "contacts",
+              dependencies: [:subscriptions]
+            }
+          }
+        )
+
+        u = User.create!(email: "x@x.x")
+        p = Profile.create!(user: u, updated_at: now)
+        s = Subscription.create!(users_profile_id: p.id, updated_at: now)
+
+        # Fresh sync -> not stale
+        create_sync!(u, crm: :hubspot, last_synced_at: now + 1)
+        rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
+        expect(rel.pluck(:id)).not_to include(u.id)
+
+        # Make the source newer -> becomes stale
+        s.update!(updated_at: now + 20)
+        rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
+        expect(rel.pluck(:id)).to include(u.id)
+      end
+    end
   end
 
-  # --------- NEW: owner belongs_to polymorphic (avatarable) ----------
+  # --------- owner belongs_to polymorphic (avatarable) ----------
 
   describe "owner belongs_to polymorphic dependency" do
     it "uses concrete target updated_at when avatarable is set" do

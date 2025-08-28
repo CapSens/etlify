@@ -17,8 +17,8 @@ Etlify.configure do |config|
     # another_crm_etlified_with(...)
 
   # overridable defaults config
-  # @job_queue_name = "low"
   # @digest_strategy = Etlify::Digest.method(:stable_sha256)
-  # @logger = defined?(Rails) ? Rails.logger : Logger.new($stdout)
-  # @cache_store = Rails.cache
+  # @job_queue_name  = "low"
+  # @logger = Rails.logger || Logger.new($stdout)
+  # @cache_store = Rails.cache || ActiveSupport::Cache::MemoryStore.new
 end

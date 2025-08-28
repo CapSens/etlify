@@ -8,7 +8,7 @@ module Etlify
     )
 
     # @param resource [ActiveRecord::Base]
-    # @param crm [Symbol,String]
+    # @param crm_name [Symbol,String]
     def self.call(resource, crm_name:)
       new(resource, crm_name: crm_name).call
     end
@@ -17,7 +17,7 @@ module Etlify
       @resource = resource
       @crm_name = crm_name.to_sym
       @conf    = resource.class.etlify_crms.fetch(@crm_name)
-      @adapter = @conf[:adapter].new
+      @adapter = @conf[:adapter]
     end
 
     def call
@@ -31,7 +31,9 @@ module Etlify
       )
       :deleted
     rescue => e
-      raise Etlify::SyncError, e.message
+      error = Etlify::SyncError.new(e.message)
+      error.set_backtrace(e.backtrace)
+      raise error
     end
 
     private
