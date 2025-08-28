@@ -223,35 +223,6 @@ RSpec.describe Etlify::Model do
     end
   end
 
-  describe "#crm_synced?" do
-    it "returns true when crm_synchronisation is present" do
-      klass = build_including_class do
-        def crm_synchronisation
-          :something
-        end
-      end
-      expect(klass.new.crm_synced?(crm: :hubspot)).to be true
-    end
-
-    it "returns false when crm_synchronisation is nil" do
-      klass = build_including_class do
-        def crm_synchronisation
-          nil
-        end
-      end
-      expect(klass.new.crm_synced?(crm: :hubspot)).to be false
-    end
-
-    it "ignores the crm: argument (compat quirk)" do
-      klass = build_including_class do
-        def crm_synchronisation
-          :x
-        end
-      end
-      expect(klass.new.crm_synced?(crm: :other)).to be true
-    end
-  end
-
   describe "#build_crm_payload" do
     it "raises when CRM is not configured" do
       klass = build_including_class

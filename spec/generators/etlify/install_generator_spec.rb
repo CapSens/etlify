@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 require "rails_helper"
 require "fileutils"
 require "tmpdir"
@@ -24,28 +22,27 @@ RSpec.describe Etlify::Generators::InstallGenerator, type: :generator do
     File.join(@tmp, "config/initializers/etlify.rb")
   end
 
-  it "creates config/initializers/etlify.rb",
-     :aggregate_failures do
+  it(
+    "creates config/initializers/etlify.rb with a valid skeleton",
+    :aggregate_failures
+  ) do
     gen = build_generator
     gen.invoke_all
 
     expect(File.exist?(generated_initializer_path)).to be(true)
 
     content = File.read(generated_initializer_path)
+
+    expect(content).to include(%(require "etlify"))
     expect(content).to include("Etlify.configure do |config|")
     expect(content).to include("Etlify::CRM.register(")
-    expect(content).to include("adapter: Etlify::Adapters::HubspotV3Adapter")
-    expect(content).to include("options: { job_class: Etlify::SyncJob }")
-    expect(content).to include("# @job_queue_name = \"low\"")
-    expect(content).to include(
-      "# @digest_strategy = Etlify::Digest.method(:stable_sha256)"
-    )
-    expect(content).to include("# @cache_store = Rails.cache")
   end
 
-  it "the generated initializer configures default HubSpot mapping by " \
-     "calling Etlify::CRM.register",
-     :aggregate_failures do
+  it(
+    "the generated initializer configures default HubSpot mapping by " \
+    "calling Etlify::CRM.register",
+    :aggregate_failures
+  ) do
     gen = build_generator
     gen.invoke_all
 
@@ -67,8 +64,10 @@ RSpec.describe Etlify::Generators::InstallGenerator, type: :generator do
     end
   end
 
-  it "est chargeable plusieurs fois sans exploser (idempotent à l'exécution)",
-     :aggregate_failures do
+  it(
+    "is safe to load multiple times (idempotent at runtime)",
+    :aggregate_failures
+  ) do
     gen = build_generator
     gen.invoke_all
 

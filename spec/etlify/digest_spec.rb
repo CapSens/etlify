@@ -1,11 +1,8 @@
-# frozen_string_literal: true
-
 require "rails_helper"
 
 RSpec.describe Etlify::Digest do
   describe ".normalize" do
-    it "sorts hash keys recursively and preserves array order",
-       :aggregate_failures do
+    it "sorts hash keys recursively and preserves array order" do
       # Hash keys (including nested) are sorted; arrays keep their order.
       input = {
         b: 2,
@@ -17,13 +14,14 @@ RSpec.describe Etlify::Digest do
 
       out = described_class.normalize(input)
 
-      expect(out.keys).to eq(%i[a b])
-      expect(out[:a].keys).to eq(%i[c z])
-      expect(out[:a][:z]).to eq([3, {k: 1}])
+      aggregate_failures do
+        expect(out.keys).to eq(%i[a b])
+        expect(out[:a].keys).to eq(%i[c z])
+        expect(out[:a][:z]).to eq([3, {k: 1}])
+      end
     end
 
-    it "recursively normalizes arrays of mixed types",
-       :aggregate_failures do
+    it "recursively normalizes arrays of mixed types" do
       input = [
         {b: 1, a: 2},
         3,
@@ -47,19 +45,19 @@ RSpec.describe Etlify::Digest do
       )
     end
 
-    it "returns scalars unchanged (String, Numeric, booleans, nil)",
-       :aggregate_failures do
-      expect(described_class.normalize("x")).to eq("x")
-      expect(described_class.normalize(42)).to eq(42)
-      expect(described_class.normalize(true)).to eq(true)
-      expect(described_class.normalize(false)).to eq(false)
-      expect(described_class.normalize(nil)).to be_nil
+    it "returns scalars unchanged (String, Numeric, booleans, nil)" do
+      aggregate_failures do
+        expect(described_class.normalize("x")).to eq("x")
+        expect(described_class.normalize(42)).to eq(42)
+        expect(described_class.normalize(true)).to eq(true)
+        expect(described_class.normalize(false)).to eq(false)
+        expect(described_class.normalize(nil)).to be_nil
+      end
     end
   end
 
   describe ".stable_sha256" do
-    it "returns a deterministic 64-char lowercase hex digest",
-       :aggregate_failures do
+    it "returns a deterministic 64-char lowercase hex digest" do
       payload = {
         a: 1,
         b: [
@@ -72,12 +70,16 @@ RSpec.describe Etlify::Digest do
       d1 = described_class.stable_sha256(payload)
       d2 = described_class.stable_sha256(payload)
 
-      expect(d1).to match(/\A\h{64}\z/)
-      expect(d1).to eq(d2)
+      aggregate_failures do
+        expect(d1).to match(/\A\h{64}\z/)
+        expect(d1).to eq(d2)
+      end
     end
 
-    it "is insensitive to hash key ordering (shallow and nested)",
-       :aggregate_failures do
+    it(
+      "is insensitive to hash key ordering (shallow and nested)",
+      :aggregate_failures
+    ) do
       p1 = {a: 1, b: 2}
       p2 = {b: 2, a: 1}
 
@@ -97,8 +99,7 @@ RSpec.describe Etlify::Digest do
         .to eq(described_class.stable_sha256(n2))
     end
 
-    it "changes when a value changes",
-       :aggregate_failures do
+    it "changes when a value changes" do
       p1 = {
         a: 1,
         b: [2, 3],
@@ -112,8 +113,7 @@ RSpec.describe Etlify::Digest do
         .not_to eq(described_class.stable_sha256(p2))
     end
 
-    it "is sensitive to array element order",
-       :aggregate_failures do
+    it "is sensitive to array element order" do
       p1 = {a: [1, 2, 3]}
       p2 = {a: [3, 2, 1]}
 
@@ -121,17 +121,17 @@ RSpec.describe Etlify::Digest do
         .not_to eq(described_class.stable_sha256(p2))
     end
 
-    it "handles primitive inputs (String, Numeric, booleans, nil)",
-       :aggregate_failures do
-      expect(described_class.stable_sha256("hello")).to match(/\A\h{64}\z/)
-      expect(described_class.stable_sha256(123)).to match(/\A\h{64}\z/)
-      expect(described_class.stable_sha256(true)).to match(/\A\h{64}\z/)
-      expect(described_class.stable_sha256(false)).to match(/\A\h{64}\z/)
-      expect(described_class.stable_sha256(nil)).to match(/\A\h{64}\z/)
+    it "handles primitive inputs (String, Numeric, booleans, nil)" do
+      aggregate_failures do
+        expect(described_class.stable_sha256("hello")).to match(/\A\h{64}\z/)
+        expect(described_class.stable_sha256(123)).to match(/\A\h{64}\z/)
+        expect(described_class.stable_sha256(true)).to match(/\A\h{64}\z/)
+        expect(described_class.stable_sha256(false)).to match(/\A\h{64}\z/)
+        expect(described_class.stable_sha256(nil)).to match(/\A\h{64}\z/)
+      end
     end
 
-    it "matches for deeply equivalent structures regardless of key order",
-       :aggregate_failures do
+    it "matches for deeply equivalent structures regardless of key order" do
       p1 = {
         a: [
           {z: 1, y: 2},

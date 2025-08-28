@@ -35,5 +35,5 @@ module Etlify
 end
 
 require_relative "../app/jobs/etlify/sync_job"
-require_relative "etlify/railtie" if defined?(Rails)
-require_relative "etlify/engine"  if defined?(Rails)
+require_relative "etlify/railtie"
+require_relative "etlify/engine"

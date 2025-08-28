@@ -144,7 +144,7 @@ RSpec.describe Etlify::Synchronizer do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: FailingAdapter,
+            adapter: FailingAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
           },

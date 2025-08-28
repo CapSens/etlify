@@ -4,72 +4,46 @@ require "rails_helper"
 
 RSpec.describe Etlify::Engine do
   def run_initializer
+    # Triggers the on_load(:active_record) hooks
     ActiveSupport.run_load_hooks(:active_record, ActiveRecord::Base)
   end
 
   context "when the required column is present" do
     it "does not raise" do
-      # L'initializer a déjà été exécuté au chargement de la gem,
-      # son on_load est donc enregistré : on peut juste déclencher le hook.
       expect { run_initializer }.not_to raise_error
     end
   end
 
-  context "when the required column is missing" do
+  context "when the required column is missing (logging mode)" do
     before do
-      # Drop + recreate the table without the crm_name column.
-      ActiveRecord::Base.connection.execute(
-        "DROP TABLE IF EXISTS crm_synchronisations"
+      # Do not mutate schema: stub what the initializer reads
+      allow(CrmSynchronisation).to receive(:table_exists?).and_return(true)
+      allow(CrmSynchronisation).to receive(:column_names).and_return(
+        %w[
+          id crm_id last_digest last_synced_at last_error
+          resource_type resource_id created_at updated_at
+        ]
       )
-      ActiveRecord::Schema.define do
-        create_table :crm_synchronisations, force: true do |t|
-          # crm_name intentionally omitted
-          t.string   :crm_id
-          t.string   :last_digest
-          t.datetime :last_synced_at
-          t.text     :last_error
-          t.string   :resource_type, null: false
-          t.integer  :resource_id, null: false
-          t.timestamps
-        end
-      end
       CrmSynchronisation.reset_column_information
     end
 
-    after do
-      # Restore correct schema for other specs.
-      ActiveRecord::Base.connection.execute(
-        "DROP TABLE IF EXISTS crm_synchronisations"
-      )
-      ActiveRecord::Schema.define do
-        create_table :crm_synchronisations, force: true do |t|
-          t.string  :crm_name, null: false
-          t.string  :crm_id
-          t.string  :last_digest
-          t.datetime :last_synced_at
-          t.text    :last_error
-          t.string  :resource_type, null: false
-          t.integer :resource_id, null: false
-          t.timestamps
-        end
-        add_index :crm_synchronisations,
-                  %i[resource_type resource_id crm_name],
-                  unique: true,
-                  name: "idx_sync_polymorphic_unique"
-      end
-      CrmSynchronisation.reset_column_information
-    end
+    it "logs a helpful error" do
+      # Use a test logger spy without printing to STDOUT/STDERR
+      test_logger = instance_double(Logger)
+      allow(test_logger).to receive(:error)
+      allow(Etlify.config).to receive(:logger).and_return(test_logger)
 
-    it "raises a helpful Etlify::MissingColumnError" do
-      # Find the initializer and run it INSIDE the expectation.
+      # Ensure the initializer is registered, then trigger the hook
       init = Etlify::Engine.initializers.find do |i|
         i.name == "etlify.check_crm_name_column"
       end
+      init.run(Etlify::Engine.instance)
 
-      expect { init.run(Etlify::Engine.instance) }.to raise_error(
-        Etlify::MissingColumnError,
-        /Missing column "crm_name" on table "crm_synchronisations"/
-      )
+      run_initializer
+
+      expect(test_logger).to have_received(:error).with(
+        match(/Missing column "crm_name" on table "crm_synchronisations"/)
+      ).at_least(:once)
     end
   end
 

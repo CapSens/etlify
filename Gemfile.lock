@@ -277,11 +277,8 @@ PLATFORMS
   x86_64-linux-musl
 
 DEPENDENCIES
-  activejob (>= 7.0)
-  activerecord (>= 7.0)
-  activesupport (>= 7.0)
   etlify!
-  rails (~> 7.1)
+  rails (~> 7.2)
   rspec (~> 3.13)
   rspec-rails (~> 6.1)
   rubocop (~> 1.79)

@@ -99,7 +99,7 @@ RSpec.configure do |config|
       def self.etlify_crms
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
           },

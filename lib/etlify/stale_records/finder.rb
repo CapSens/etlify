@@ -170,12 +170,13 @@ module Etlify
 
           preds = []
           preds << "#{quoted(through_tbl, through.foreign_key, conn)} = " \
-                   "#{quoted(owner_tbl, model.primary_key, conn)}"
+                  "#{quoted(owner_tbl, model.primary_key, conn)}"
           if (as = through.options[:as])
             preds << "#{quoted(through_tbl, "#{as}_type", conn)} = " \
-                     "#{conn.quote(model.name)}"
+                    "#{conn.quote(model.name)}"
           end
 
+<<<<<<< HEAD
           # Join direction depends on source.macro:
           # - belongs_to  => through has FK to source
           # - has_one/many => source has FK to through
@@ -194,6 +195,18 @@ module Etlify
             else
               # Unknown macro: return epoch guard to avoid SQL errors.
               return epoch
+=======
+          # 🔧 Join orientation fix:
+          # If source is belongs_to, FK lives on the through table.
+          # Else (has_many/has_one), FK lives on the source table.
+          join_on =
+            if source.macro == :belongs_to
+              "#{quoted(source_tbl, source_pk, conn)} = " \
+              "#{quoted(through_tbl, source.foreign_key, conn)}"
+            else
+              "#{quoted(source_tbl, source.foreign_key, conn)} = " \
+              "#{quoted(through_tbl, through.klass.primary_key, conn)}"
+>>>>>>> b188f82 ([handle-multi-crm] feat: Beta1)
             end
 
           sub = <<-SQL.squish

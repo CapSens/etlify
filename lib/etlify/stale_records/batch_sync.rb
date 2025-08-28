@@ -14,10 +14,12 @@ module Etlify
       # batch_size: # of ids per batch.
       #
       # Returns a Hash with :total, :per_model, :errors.
-      def self.call(models: nil,
+      def self.call(
+        models: nil,
         crm_name: nil,
         async: true,
-        batch_size: DEFAULT_BATCH_SIZE)
+        batch_size: DEFAULT_BATCH_SIZE
+      )
         new(
           models: models,
           crm_name: crm_name,
@@ -75,7 +77,7 @@ module Etlify
             model.where(pk => ids).find_each(batch_size: @batch_size) do |rec|
               Etlify::Synchronizer.call(rec, crm_name: crm_name)
               count += 1
-            rescue
+            rescue StandardError
               # Count and continue; no logging by design.
               errors += 1
             end
