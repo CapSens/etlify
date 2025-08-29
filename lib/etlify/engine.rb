@@ -8,18 +8,7 @@ module Etlify
     initializer "etlify.check_crm_name_column" do
       ActiveSupport.on_load(:active_record) do
         if Etlify::Engine.should_display_crm_name_warning?
-
-          Etlify.config.logger.error(
-            <<~MSG.squish
-              Missing column "crm_name" on table "crm_synchronisations".
-              Please generate a migration with:
-
-                rails g migration AddCrmNameToCrmSynchronisations \
-                  crm_name:string:index
-
-              Then run: rails db:migrate
-            MSG
-          )
+          raise(Etlify::Engine.missing_crm_name_warning_message)
         end
       rescue ActiveRecord::NoDatabaseError, ActiveRecord::StatementInvalid
         # Happens during `rails db:create` or before schema is loaded.
@@ -32,6 +21,18 @@ module Etlify
       return unless CrmSynchronisation.table_exists?
 
       !CrmSynchronisation.column_names.include?("crm_name")
+    end
+
+    def self.missing_crm_name_warning_message
+      <<~MSG.squish
+        Missing column "crm_name" on table "crm_synchronisations".
+        Please generate a migration with:
+
+          rails g migration AddCrmNameToCrmSynchronisations \
+            crm_name:string:index
+
+        Then run: rails db:migrate
+      MSG
     end
   end
 end

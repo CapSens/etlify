@@ -75,11 +75,9 @@ module Etlify
           else
             # Load full records only when performing inline.
             model.where(pk => ids).find_each(batch_size: @batch_size) do |rec|
-              Etlify::Synchronizer.call(rec, crm_name: crm_name)
+              service = Etlify::Synchronizer.call(rec, crm_name: crm_name)
               count += 1
-            rescue StandardError
-              # Count and continue; no logging by design.
-              errors += 1
+              errors += 1 if service == :error
             end
           end
         end
