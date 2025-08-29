@@ -4,8 +4,17 @@ require "rails_helper"
 
 RSpec.describe Etlify::Engine do
   def run_initializer
-    # Triggers the on_load(:active_record) hooks
-    ActiveSupport.run_load_hooks(:active_record, ActiveRecord::Base)
+    # Re-run only the initializer we want, after our stubs.
+    # Because ActiveRecord is already loaded, on_load(:active_record)
+    # will execute the block immediately, using our stubs.
+    initializer = Etlify::Engine.initializers.find do |i|
+      i.name == "etlify.check_crm_name_column"
+    end
+
+    # Safety: make sure we actually found it.
+    raise "Initializer not found" unless initializer
+
+    initializer.run(Etlify::Engine.instance)
   end
 
   context "when the required column is present" do
@@ -14,36 +23,28 @@ RSpec.describe Etlify::Engine do
     end
   end
 
-  context "when the required column is missing (logging mode)" do
+  context "when the required column is missing" do
     before do
       # Do not mutate schema: stub what the initializer reads
       allow(CrmSynchronisation).to receive(:table_exists?).and_return(true)
-      allow(CrmSynchronisation).to receive(:column_names).and_return(
-        %w[
-          id crm_id last_digest last_synced_at last_error
-          resource_type resource_id created_at updated_at
-        ]
-      )
+      allow(CrmSynchronisation).to receive(:column_names).and_return([
+        "id",
+        "crm_id",
+        "last_digest",
+        "last_synced_at",
+        "last_error",
+        "resource_type",
+        "resource_id",
+        "created_at",
+        "updated_at",
+      ])
       CrmSynchronisation.reset_column_information
     end
 
-    it "logs a helpful error" do
-      # Use a test logger spy without printing to STDOUT/STDERR
-      test_logger = instance_double(Logger)
-      allow(test_logger).to receive(:error)
-      allow(Etlify.config).to receive(:logger).and_return(test_logger)
-
-      # Ensure the initializer is registered, then trigger the hook
-      init = Etlify::Engine.initializers.find do |i|
-        i.name == "etlify.check_crm_name_column"
-      end
-      init.run(Etlify::Engine.instance)
-
-      run_initializer
-
-      expect(test_logger).to have_received(:error).with(
-        match(/Missing column "crm_name" on table "crm_synchronisations"/)
-      ).at_least(:once)
+    it "raises a missing column error" do
+      expect { run_initializer }.to raise_error(
+        Etlify::Engine.missing_crm_name_warning_message
+      )
     end
   end
 

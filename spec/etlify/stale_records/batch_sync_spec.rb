@@ -176,24 +176,27 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       )
     end
 
-    it "counts errors but continues processing other records" do
+    it "counts service errors but continues processing other records" do
       create_user!(idx: 1)
       u2 = create_user!(idx: 2)
       create_user!(idx: 3)
 
       allow(Etlify::Synchronizer).to receive(:call) do |rec, crm_name:|
-        raise "boom" if rec.id == u2.id
-
-        true
+        if rec.id == u2.id
+          :error
+        else
+          :synced
+        end
       end
 
       stats = described_class.call(async: false, batch_size: 10)
 
-      expect(stats[:total]).to eq(2)  # 2 successes
-      expect(stats[:errors]).to eq(1)
-      expect(stats[:per_model]["User"]).to eq(2)
-
-      expect(Etlify::Synchronizer).to have_received(:call).exactly(3).times
+      aggregate_failures do
+        expect(stats[:total]).to eq(3)  # 2 successes
+        expect(stats[:errors]).to eq(1)
+        expect(stats[:per_model]["User"]).to eq(3)
+        expect(Etlify::Synchronizer).to have_received(:call).exactly(3).times
+      end
     end
 
     it "restricts to the provided crm_name when passed" do
