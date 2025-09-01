@@ -133,15 +133,15 @@ RSpec.describe Etlify::Model do
     end
 
     it "falls back to to_h when as_crm_payload is not implemented" do
-      rec = TestUserToH.create!(email: "toh@example.com", full_name: "To H")
-      payload = rec.build_crm_payload
-      expect(payload).to include(id: rec.id, email: "toh@example.com", source: "to_h")
+      user = TestUserToH.create!(email: "toh@example.com", full_name: "To H")
+      payload = user.build_crm_payload
+      expect(payload).to include(id: user.id, email: "toh@example.com", source: "to_h")
     end
 
     it "raises an error if neither as_crm_payload nor to_h are implemented" do
-      rec = TestUserNoPayload.create!(email: "nopayload@example.com", full_name: "No Payload")
+      user = TestUserNoPayload.create!(email: "nopayload@example.com", full_name: "No Payload")
       expect {
-        rec.build_crm_payload
+        user.build_crm_payload
       }.to raise_error(NoMethodError, /must implement "as_crm_payload" or "to_h"/)
     end
 
