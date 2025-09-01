@@ -1,3 +1,3 @@
 module Etlify
-  VERSION = "1.0.0.beta1"
+  VERSION = "0.6.0"
 end

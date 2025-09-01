@@ -16,15 +16,14 @@ Etlify sits beside your app; it does **not** try to own your domain or backgroun
 
 ## Features at a glance
 
-| Area          | What you get                                                  | Why it helps                                        |
-| ------------- | ------------------------------------------------------------- | --------------------------------------------------- |
-| DSL           | `include Etlify::Model` + `etlified_with(...)` on your models | Opt-in sync with a single line; clear, local intent |
-| Serialisers   | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
-| Adapters      | HubSpot adapter included; plug your own                       | Swap CRMs without touching model code               |
-| Idempotence   | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
-| Jobs          | `crm_sync!` enqueues an ActiveJob (`SyncJob`) or runs inline  | Fits your queue; simple to trigger                  |
-| Delete        | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
-| Configuration | Logger, queue name, digest strategy, adapter                  | Control behaviour without scattering settings       |
+| Area        | What you get                                                  | Why it helps                                        |
+| ----------- | ------------------------------------------------------------- | --------------------------------------------------- |
+| DSL         | `include Etlify::Model` + `etlified_with(...)` on your models | Opt-in sync with a single line; clear, local intent |
+| Serialisers | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
+| Adapters    | HubSpot adapter included; plug your own                       | Swap CRMs without touching model code               |
+| Idempotence | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
+| Jobs        | `crm_sync!` enqueues an ActiveJob (`SyncJob`) or runs inline  | Fits your queue; simple to trigger                  |
+| Delete      | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
 
 ---
 
@@ -97,7 +96,6 @@ Etlify.configure do |config|
 
   # @digest_strategy = Etlify::Digest.method(:stable_sha256)
   # @job_queue_name = "low"
-  @logger = Rails.logger
 end
 ```
 
@@ -397,7 +395,6 @@ end
 - **Start small**: sync only the fields you truly need in your serializer. You can add more later.
 - **Stable payloads**: avoid non-deterministic fields (timestamps, random IDs) in the payload; they defeat idempotence.
 - **Guard with `sync_if`**: skip incomplete records (e.g. no email) to reduce noise.
-- **Observe logs**: Etlify uses your configured logger; in development, check the console.
 - **Queue selection**: route `SyncJob` to a dedicated low-priority queue to keep UX jobs snappy.
 
 ### Common questions

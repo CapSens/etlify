@@ -3,7 +3,6 @@ require "active_support/core_ext/module"
 require "active_support/concern"
 require "active_support/cache"
 require "active_job"
-require "logger"
 
 require_relative "etlify/version"
 require_relative "etlify/config"

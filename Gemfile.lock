@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    etlify (1.0.0.beta1)
+    etlify (0.6.0)
       rails (>= 7.0)
 
 GEM
