@@ -19,6 +19,5 @@ Etlify.configure do |config|
   # overridable defaults config
   # @digest_strategy = Etlify::Digest.method(:stable_sha256)
   # @job_queue_name  = "low"
-  # @logger = Rails.logger || Logger.new($stdout)
   # @cache_store = Rails.cache || ActiveSupport::Cache::MemoryStore.new
 end

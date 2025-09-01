@@ -2,7 +2,7 @@ PATH
   remote: .
   specs:
     etlify (0.8.1)
-      rails (>= 7.2, < 8)
+      rails (>= 7.0)
 
 GEM
   remote: https://rubygems.org/
