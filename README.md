@@ -116,6 +116,7 @@ end
 # app/serializers/etlify/user_serializer.rb
 class UserSerializer < Etlify::Serializers::BaseSerializer
   # Must return a Hash that matches your CRM field names
+  # you can also use to_h method
   def as_crm_payload(user)
     {
       email: user.email,
