@@ -31,7 +31,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
        :aggregate_failures do
       allow_any_instance_of(described_class)
         .to receive(:call)
-        .and_return({ total: 0, per_model: {}, errors: 0 })
+        .and_return({total: 0, per_model: {}, errors: 0})
 
       stats = described_class.call
       expect(stats).to eq(total: 0, per_model: {}, errors: 0)
@@ -97,7 +97,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         job = Etlify.config.sync_job_class
         enq = ActiveJob::Base.queue_adapter.enqueued_jobs
 
-        expect(enq.map { |j| j[:job].to_s }.uniq).to include(job)
+        expect(enq.map { |j| j[:job].to_s }.uniq).to include(job.to_s)
 
         args = enq.map { |j| j[:args] }
         expect(args).to all(
@@ -188,7 +188,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
 
         full_map = {
           Company => ids_relation(Company, [c1.id, c2.id]),
-          User    => ids_relation(User,    [u1.id, u2.id])
+          User => ids_relation(User, [u1.id, u2.id]),
         }
         stub_finder(full_map)
 

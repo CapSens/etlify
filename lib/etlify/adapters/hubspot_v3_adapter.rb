@@ -29,7 +29,8 @@ module Etlify
       # Upsert by searching on id_property (if provided), otherwise create directly.
       # @param object_type [String] HubSpot CRM object type (e.g., "contacts", "companies", "deals", or a custom object)
       # @param payload [Hash] Properties for the object
-      # @param id_property [String, nil] Unique property used to search and upsert (e.g., "email" for contacts, "domain" for companies)
+      # @param id_property [String, nil] Unique property used to search and upsert
+      # (e.g., "email" for contacts, "domain" for companies)
       # @return [String, nil] HubSpot hs_object_id as string or nil if not available
       def upsert!(object_type:, payload:, id_property: nil)
         raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
@@ -87,20 +88,20 @@ module Etlify
           http.use_ssl = uri.scheme == "https"
 
           klass = {
-            get:    Net::HTTP::Get,
-            post:   Net::HTTP::Post,
-            patch:  Net::HTTP::Patch,
-            delete: Net::HTTP::Delete
+            get: Net::HTTP::Get,
+            post: Net::HTTP::Post,
+            patch: Net::HTTP::Patch,
+            delete: Net::HTTP::Delete,
           }.fetch(method) { raise ArgumentError, "Unsupported method: #{method.inspect}" }
 
           req = klass.new(uri.request_uri, headers)
           req.body = body if body
 
           res = http.request(req)
-          { status: res.code.to_i, body: res.body }
-        rescue StandardError => e
+          {status: res.code.to_i, body: res.body}
+        rescue => error
           # Bubble up transport-level errors to be wrapped by #request
-          raise e
+          raise error
         end
       end
 
@@ -110,15 +111,15 @@ module Etlify
 
         headers = {
           "Authorization" => "Bearer #{@access_token}",
-          "Content-Type"  => "application/json",
-          "Accept"        => "application/json"
+          "Content-Type" => "application/json",
+          "Accept" => "application/json",
         }
 
         raw_body = body && JSON.dump(body)
 
         begin
           res = @http.request(method, url, headers: headers, body: raw_body)
-        rescue StandardError => e
+        rescue => e
           # Normalize all transport errors into TransportError with as much context as possible
           raise Etlify::TransportError.new(
             "HTTP transport error: #{e.class}: #{e.message}",
@@ -171,6 +172,7 @@ module Etlify
 
       def parse_json_safe(str)
         return nil if str.nil? || str.empty?
+
         JSON.parse(str)
       rescue JSON::ParserError
         nil
@@ -178,24 +180,58 @@ module Etlify
 
       def find_object_id_by_property(object_type, property, value)
         path = "/crm/v3/objects/#{object_type}/search"
-        body = {
-          filterGroups: [
-            { filters: [{ propertyName: property.to_s, operator: "EQ", value: value }] }
-          ],
-          properties: ["hs_object_id"],
-          limit: 1
-        }
+
+        # Normalize input for safer matching on HubSpot side
+        prop = property.to_s
+        clean_value = value.to_s.strip
+        value = (prop == "email") ? clean_value.downcase : clean_value
+
+        # Base exact match (works for native/custom objects)
+        filter_groups = [
+          {
+            filters: [
+              {propertyName: prop, operator: "EQ", value: value},
+            ],
+          },
+        ]
+
+        # Contacts quirks: search secondary emails and handle "+" edge cases
+        if object_type == "contacts" && prop == "email"
+          # Secondary emails live in hs_additional_emails
+          filter_groups << {
+            filters: [
+              {
+                propertyName: "hs_additional_emails",
+                operator: "CONTAINS_TOKEN",
+                value: value,
+              },
+            ],
+          }
+
+          # Last-resort: try with %2B for APIs that mishandle "+"
+          if value.include?("+")
+            filter_groups << {
+              filters: [
+                {
+                  propertyName: "email",
+                  operator: "EQ",
+                  value: value.gsub("+", "%2B"),
+                },
+              ],
+            }
+          end
+        end
+
+        body = {filterGroups: filter_groups, properties: ["hs_object_id"], limit: 1}
         resp = request(:post, path, body: body)
 
-        # Search endpoint should return 200 with results or empty array.
-        # Any other error should raise.
         if resp[:status] == 200 && resp[:json].is_a?(Hash)
           results = resp[:json]["results"]
           return results.first["id"] if results.is_a?(Array) && results.any?
+
           return nil
         end
 
-        # 404 is uncommon for /search, but if it happens, treat as "not found".
         return nil if resp[:status] == 404
 
         raise_for_error!(resp, path: path)
@@ -203,7 +239,7 @@ module Etlify
 
       def update_object(object_type, object_id, properties)
         path = "/crm/v3/objects/#{object_type}/#{object_id}"
-        body = { properties: stringify_keys(properties) }
+        body = {properties: stringify_keys(properties)}
         resp = request(:patch, path, body: body)
         raise_for_error!(resp, path: path)
         true
@@ -218,7 +254,9 @@ module Etlify
           props[id_property.to_s] = unique_value
         end
 
-        resp = request(:post, path, body: { properties: props })
+        props["email"] = props["email"].downcase if props.key?("email")
+
+        resp = request(:post, path, body: {properties: props})
         if resp[:status].between?(200, 299) && resp[:json].is_a?(Hash) && resp[:json]["id"]
           return resp[:json]["id"].to_s
         end
