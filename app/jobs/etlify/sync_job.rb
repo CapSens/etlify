@@ -1,6 +1,6 @@
 module Etlify
   class SyncJob < ActiveJob::Base
-    queue_as Etlify.config.job_queue_name
+    queue_as { Etlify.config.job_queue_name }
     retry_on(StandardError, attempts: 3, wait: :polynomially_longer)
 
     ENQUEUE_LOCK_TTL = 15.minutes
@@ -16,19 +16,17 @@ module Etlify
     end
 
     around_perform do |job, block|
-      begin
-        block.call
-      ensure
-        Etlify.config.cache_store.delete(enqueue_lock_key(job))
-      end
+      block.call
+    ensure
+      Etlify.config.cache_store.delete(enqueue_lock_key(job))
     end
 
-    def perform(record_class, id)
-      model  = record_class.constantize
-      record = model.find_by(id: id)
-      return unless record
+    def perform(model_class_name, resource_id, crm_name)
+      model = model_class_name.constantize
+      resource = model.find_by(id: resource_id)
+      return unless resource
 
-      Etlify::Synchronizer.call(record)
+      Etlify::Synchronizer.call(resource, crm_name: crm_name.to_sym)
     end
 
     private
