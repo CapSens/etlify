@@ -64,9 +64,9 @@ module Etlify
       serializer = self.class.etlify_serializer.new(self)
 
       if serializer.respond_to?(:as_crm_payload)
-        serializer.public_send(:as_crm_payload)
+        serializer.as_crm_payload
       elsif serializer.respond_to?(:to_h)
-        serializer.public_send(:to_h)
+        serializer.to_h
       else
         raise NoMethodError, "#{serializer.class} must implement \"as_crm_payload\" or \"to_h\""
       end
