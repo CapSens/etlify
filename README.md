@@ -315,7 +315,7 @@ end
 ### Behaviour
 
 - `object_type`: the target entity, e.g. `"contacts"`, `"companies"`, `"deals"`, or the API name of a custom object.
-- `id_property` (mandtory): if your upsert should search for an existing record by a unique property (e.g. `"email"` for contacts), the adapter uses it to find-or-create.
+- `id_property` (mandatory): if your upsert should search for an existing record by a unique property (e.g. `"email"` for contacts), the adapter uses it to find-or-create.
 - If no match is found (or no `id_property` is provided), the adapter **creates** a new record.
 
 ### Example: Contact upsert
@@ -361,7 +361,7 @@ module Etlify
   module Adapters
     class MyCrmAdapter
       # Must return the remote CRM ID as a String
-      def upsert!(object_type:, payload:, id_property: nil)
+      def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
         # Call your CRM API to create or update
         # Return the CRM id (e.g. "12345")
       end
@@ -440,7 +440,8 @@ user.crm_sync!
 expect(fake_adapter).to have_received(:upsert!).with(
   object_type: "contacts",
   payload: hash_including(email: "someone@example.com"),
-  id_property: anything
+  id_property: anything,
+  crm_id: nil
 )
 ```
 

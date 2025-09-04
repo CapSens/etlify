@@ -16,23 +16,28 @@ module Etlify
           crm_id = Etlify.config.crm_adapter.upsert!(
             payload: payload,
             id_property: @record.etlify_id_property,
-            object_type: @record.etlify_crm_object_type
+            object_type: @record.etlify_crm_object_type,
+            crm_id: sync_line.crm_id.presence
           )
 
-          sync_line.update!(
-            crm_id: crm_id.presence,
+          attributes = {
             last_digest: digest,
             last_synced_at: Time.current,
-            last_error: nil
-          )
+            last_error: nil,
+          }
 
+          unless sync_line.crm_id.present?
+            attributes[:crm_id] = crm_id.presence
+          end
+
+          sync_line.update!(attributes)
           :synced
         else
           sync_line.update!(last_synced_at: Time.current)
           :not_modified
         end
       end
-    rescue StandardError => e
+    rescue => e
       sync_line.update!(last_error: e.message)
     end
 

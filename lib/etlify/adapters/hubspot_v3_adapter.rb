@@ -14,7 +14,7 @@ module Etlify
     #
     # Usage:
     #   adapter = Etlify::Adapters::HubspotV3Adapter.new(access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"])
-    #   adapter.upsert!(object_type: "contacts", payload: { email: "john@example.com" }, id_property: "email")
+    #   adapter.upsert!(object_type: "contacts", payload: {email: "john@example.com"}, id_property: :email, crm_id: nil)
     #   adapter.delete!(object_type: "contacts", crm_id: "123") # => true, or false if 404
     class HubspotV3Adapter
       API_BASE = "https://api.hubapi.com"
@@ -30,28 +30,35 @@ module Etlify
       # @param object_type [String] HubSpot CRM object type (e.g., "contacts", "companies", "deals", or a custom object)
       # @param payload [Hash] Properties for the object
       # @param id_property [String, nil] Unique property used to search and upsert
+      # @param crm_id [Integer, String, nil] Record's HubSpot hs_object_id if known
+      #   (overrides id_property search if provided)
+      #   If both crm_id and id_property are nil, a new object is created.
+      #   If id_property is provided but not found, a new object is created.
       # (e.g., "email" for contacts, "domain" for companies)
       # @return [String, nil] HubSpot hs_object_id as string or nil if not available
-      def upsert!(object_type:, payload:, id_property: nil)
+      def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
         raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
         raise ArgumentError, "payload must be a Hash" unless payload.is_a?(Hash)
 
         properties   = payload.dup
         unique_value = nil
 
-        if id_property
-          # Extract unique value whether id_property/payload keys are
-          # string or symbol. Normalize, then try both forms.
-          key_str = id_property.to_s
-          key_sym = key_str.to_sym
-          unique_value =
-            properties.delete(key_str) || properties.delete(key_sym)
-        end
+        if crm_id.to_s.strip.empty?
+          if id_property
+            # Extract unique value whether id_property/payload keys are
+            # string or symbol. Normalize, then try both forms.
+            key_str = id_property.to_s
+            key_sym = key_str.to_sym
+            unique_value =
+              properties.delete(key_str) || properties.delete(key_sym)
+          end
 
-        object_id =
-          if id_property && unique_value
+          object_id = if id_property && unique_value
             find_object_id_by_property(object_type, id_property, unique_value)
           end
+        else
+          object_id = crm_id.to_s.strip
+        end
 
         if object_id
           update_object(object_type, object_id, properties)
