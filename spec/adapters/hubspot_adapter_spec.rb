@@ -51,7 +51,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
     context "when crm_id is provided" do
       it "skips search and PATCHes directly, returning the id",
-        :aggregate_failures do
+         :aggregate_failures do
         # Must NOT hit the /search endpoint
         expect(http).not_to receive(:request).with(
           :post,
