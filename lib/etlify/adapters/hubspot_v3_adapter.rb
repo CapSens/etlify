@@ -14,7 +14,7 @@ module Etlify
     #
     # Usage:
     #   adapter = Etlify::Adapters::HubspotV3Adapter.new(access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"])
-    #   adapter.upsert!(object_type: "contacts", payload: { email: "john@example.com" }, id_property: "email")
+    #   adapter.upsert!(object_type: "contacts", payload: {email: "john@example.com"}, id_property: :email, crm_id: nil)
     #   adapter.delete!(object_type: "contacts", crm_id: "123") # => true, or false if 404
     class HubspotV3Adapter
       API_BASE = "https://api.hubapi.com"
@@ -30,6 +30,10 @@ module Etlify
       # @param object_type [String] HubSpot CRM object type (e.g., "contacts", "companies", "deals", or a custom object)
       # @param payload [Hash] Properties for the object
       # @param id_property [String, nil] Unique property used to search and upsert
+      # @param crm_id [Integer, String, nil] Record's HubSpot hs_object_id if known
+      #   (overrides id_property search if provided)
+      #   If both crm_id and id_property are nil, a new object is created.
+      #   If id_property is provided but not found, a new object is created.
       # (e.g., "email" for contacts, "domain" for companies)
       # @return [String, nil] HubSpot hs_object_id as string or nil if not available
       def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
