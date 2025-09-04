@@ -16,6 +16,15 @@ RSpec.describe Etlify::Model do
           { id: record.id, email: record.email }
         end
       end
+
+      class TestUserToHSerializer < BaseSerializer
+        def to_h
+          { id: record.id, email: record.email }
+        end
+      end
+
+      class TestUserNoPayloadSerializer < BaseSerializer
+      end
     end
   end
 
@@ -26,6 +35,40 @@ RSpec.describe Etlify::Model do
 
     etlified_with(
       serializer: Etlify::Serializers::TestUserSerializer,
+      crm_object_type: "contacts",
+      id_property: :id,
+      sync_if: ->(u) { u.email.present? }
+    )
+
+    def crm_object_type
+      "contacts"
+    end
+  end
+
+  class TestUserToH < ActiveRecord::Base
+    self.table_name = "users"
+    include Etlify::Model
+    belongs_to :company, optional: true
+
+    etlified_with(
+      serializer: Etlify::Serializers::TestUserToHSerializer,
+      crm_object_type: "contacts",
+      id_property: :id,
+      sync_if: ->(u) { u.email.present? }
+    )
+
+    def crm_object_type
+      "contacts"
+    end
+  end
+
+  class TestUserNoPayload < ActiveRecord::Base
+    self.table_name = "users"
+    include Etlify::Model
+    belongs_to :company, optional: true
+
+    etlified_with(
+      serializer: Etlify::Serializers::TestUserNoPayloadSerializer,
       crm_object_type: "contacts",
       id_property: :id,
       sync_if: ->(u) { u.email.present? }
@@ -87,6 +130,19 @@ RSpec.describe Etlify::Model do
     it "uses the configured serializer and returns a stable Hash" do
       payload = user.build_crm_payload
       expect(payload).to include(id: user.id, email: "john@example.com")
+    end
+
+    it "falls back to to_h when as_crm_payload is not implemented" do
+      user = TestUserToH.create!(email: "toh@example.com", full_name: "To H")
+      payload = user.build_crm_payload
+      expect(payload).to include(id: user.id, email: "toh@example.com")
+    end
+
+    it "raises an error if neither as_crm_payload nor to_h are implemented" do
+      user = TestUserNoPayload.create!(email: "nopayload@example.com", full_name: "No Payload")
+      expect {
+        user.build_crm_payload
+      }.to raise_error(NotImplementedError)
     end
 
     it "raises an error if crm_synced is not configured (documentation test)", :aggregate_failures do
