@@ -49,6 +49,40 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       end
     end
 
+    context "when crm_id is provided" do
+      it "skips search and PATCHes directly, returning the id",
+        :aggregate_failures do
+        # Must NOT hit the /search endpoint
+        expect(http).not_to receive(:request).with(
+          :post,
+          "https://api.hubapi.com/crm/v3/objects/contacts/search",
+          anything
+        )
+
+        # Direct update on the provided crm_id
+        expect(http).to receive(:request).with(
+          :patch,
+          "https://api.hubapi.com/crm/v3/objects/contacts/1234",
+          headers: hash_including("Authorization" => "Bearer #{token}"),
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            props = json["properties"]
+            # We only assert what's essential for this scenario
+            props.is_a?(Hash) && props["firstname"] == "John"
+          end
+        ).and_return({status: 200, body: "{}"})
+
+        id = adapter.upsert!(
+          object_type: "contacts",
+          payload: {email: "ignored@example.com", firstname: "John"},
+          id_property: "email",
+          crm_id: "1234"
+        )
+
+        expect(id).to eq("1234")
+      end
+    end
+
     context "when object does not exist yet (native type)" do
       it "POSTs a new object and returns its id", :aggregate_failures do
         # 1) Search → no results
