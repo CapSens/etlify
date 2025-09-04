@@ -61,7 +61,13 @@ module Etlify
     def build_crm_payload
       raise_unless_crm_is_configured
 
-      self.class.etlify_serializer.new(self).as_crm_payload
+      serializer = self.class.etlify_serializer.new(self)
+
+      if serializer.respond_to?(:to_h)
+        serializer.to_h
+      else serializer.respond_to?(:as_crm_payload)
+        serializer.as_crm_payload
+      end
     end
 
     # @param async [Boolean, nil] prioritaire sur la config globale
