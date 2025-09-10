@@ -78,6 +78,90 @@ RSpec.describe Etlify::StaleRecords::Finder do
       expect(result.keys).to contain_exactly(User)
     end
 
+    context "when has_many :through with FK on source "\
+        "(subscriptions via profiles)" do
+      before(:all) do
+        # Create missing tables for this focused scenario
+        ActiveRecord::Schema.define do
+          create_table :users_profiles, force: true do |t|
+            t.integer :user_id
+            t.timestamps
+          end
+          add_index :users_profiles, :user_id
+
+          create_table :subscriptions, force: true do |t|
+            t.integer :users_profile_id
+            t.timestamps
+          end
+          add_index :subscriptions, :users_profile_id
+        end
+
+        # Define minimal namespaced models
+        module Users; end
+
+        class Users::Profile < ApplicationRecord
+          self.table_name = "users_profiles"
+          belongs_to :user
+          has_many :subscriptions,
+                  class_name: "Subscription",
+                  foreign_key: :users_profile_id,
+                  inverse_of: :profile,
+                  dependent: :destroy
+        end
+
+        class Subscription < ApplicationRecord
+          belongs_to :profile,
+                    class_name: "Users::Profile",
+                    foreign_key: :users_profile_id,
+                    inverse_of: :subscriptions
+        end
+
+        # Extend User for this spec: add through association and dependency
+        User.class_eval do
+          has_many :profiles,
+                  class_name: "Users::Profile",
+                  inverse_of: :user,
+                  dependent: :destroy
+          has_many :subscriptions, through: :profiles
+
+          # Add :subscriptions to the dependencies list for the Finder
+          def self.etlify_dependencies
+            [:company, :teams, :subscriptions]
+          end
+        end
+      end
+
+      it "uses the correct join and marks User as stale" do
+        user = User.create!(email: "a@b.c")
+        profile = Users::Profile.create!(user: user)
+        subscription = Subscription.create!(profile: profile)
+
+        # Fresh sync at t0
+        CrmSynchronisation.create!(
+          resource_type: "User",
+          resource_id: user.id,
+          last_synced_at: Time.current
+        )
+        Timecop.travel(1.second.from_now)
+
+        # Updating a source row (subscription) should stale the owner (user)
+        subscription.touch
+
+        result = described_class.call
+        expect(result[User].pluck("users.id")).to include(user.id)
+
+        # Assert join direction in the subquery is correct after the fix:
+        # subscriptions.users_profile_id = users_profiles.id
+        sql = result[User].to_sql
+        expect(sql).to include(
+          "INNER JOIN \"subscriptions\" ON " \
+          "\"subscriptions\".\"users_profile_id\" = " \
+          "\"users_profiles\".\"id\""
+        )
+      end
+    end
+
+
     context "when a record has a recent sync but dependency changes later" do
       it "marks it stale based on the greatest updated_at among deps" do
         Timecop.freeze do
