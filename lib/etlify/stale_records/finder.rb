@@ -9,6 +9,7 @@ module Etlify
           targets = models || etlified_models
           targets.each_with_object({}) do |model, h|
             next unless model.table_exists?
+
             h[model] = stale_relation_for(model)
           end
         end
@@ -19,6 +20,7 @@ module Etlify
         def etlified_models
           ActiveRecord::Base.descendants.select do |m|
             next false unless m.respond_to?(:table_exists?) && m.table_exists?
+
             m.respond_to?(:etlify_crm_object_type) &&
               m.etlify_crm_object_type.present?
           end
@@ -46,16 +48,19 @@ module Etlify
             .select(model.arel_table[model.primary_key])
         end
 
-        # Build SQL for the "latest updated_at" across record and its dependencies.
+        # Build SQL for the "latest updated_at" across record and its deps.
         def latest_timestamp_sql(model, epoch)
           conn = model.connection
           owner_tbl = model.table_name
 
-          parts = ["COALESCE(#{quoted(owner_tbl, 'updated_at', conn)}, #{epoch})"]
+          parts = [
+            "COALESCE(#{quoted(owner_tbl, 'updated_at', conn)}, #{epoch})",
+          ]
 
           Array(model.try(:etlify_dependencies)).each do |dep_name|
             reflection = model.reflect_on_association(dep_name)
             next unless reflection
+
             parts << dependency_max_timestamp_sql(model, reflection, epoch)
           end
 
@@ -103,7 +108,8 @@ module Etlify
 
             if (poly_as = reflection.options[:as])
               type_col = "#{poly_as}_type"
-              preds << "#{quoted(dep_tbl, type_col, conn)} = #{conn.quote(model.name)}"
+              preds << "#{quoted(dep_tbl, type_col, conn)} = " \
+                       "#{conn.quote(model.name)}"
             end
 
             sub = <<-SQL.squish
@@ -130,7 +136,7 @@ module Etlify
           source_pk   = reflection.klass.primary_key
           owner_tbl   = model.table_name
 
-          # Filter through rows that point to the owner.
+          # Filter "through" rows that point to the owner.
           preds = []
           preds << "#{quoted(through_tbl, through.foreign_key, conn)} = " \
                    "#{quoted(owner_tbl, model.primary_key, conn)}"
@@ -139,9 +145,25 @@ module Etlify
                      "#{conn.quote(model.name)}"
           end
 
-          # Join through -> source via the source reflection (usually belongs_to).
-          join_on = "#{quoted(source_tbl, source_pk, conn)} = " \
-                    "#{quoted(through_tbl, source.foreign_key, conn)}"
+          # Join direction depends on source.macro:
+          # - belongs_to  => through has FK to source
+          # - has_one/many => source has FK to through
+          join_on =
+            case source.macro
+            when :belongs_to
+              # Example: memberships belongs_to :team
+              # teams.id = memberships.team_id
+              "#{quoted(source_tbl, source_pk, conn)} = " \
+              "#{quoted(through_tbl, source.foreign_key, conn)}"
+            when :has_one, :has_many
+              # Example: profiles has_many :subscriptions
+              # subscriptions.users_profile_id = users_profiles.id
+              "#{quoted(source_tbl, source.foreign_key, conn)} = " \
+              "#{quoted(through_tbl, through.klass.primary_key, conn)}"
+            else
+              # Unknown macro: return epoch guard to avoid SQL errors.
+              return epoch
+            end
 
           sub = <<-SQL.squish
             SELECT MAX(#{quoted(source_tbl, 'updated_at', conn)})
@@ -154,8 +176,7 @@ module Etlify
           "COALESCE((#{sub}), #{epoch})"
         end
 
-        # belongs_to polymorphic: enumerate concrete types found in data, and
-        # pick the greatest updated_at among the matching target row.
+        # Polymorphic belongs_to: enumerate concrete types present in data.
         def polymorphic_belongs_to_timestamp_sql(model, reflection, epoch)
           conn      = model.connection
           owner_tbl = model.table_name
@@ -175,14 +196,17 @@ module Etlify
               COALESCE((
                 SELECT #{quoted(dep_tbl, 'updated_at', conn)}
                 FROM #{conn.quote_table_name(dep_tbl)}
-                WHERE #{quoted(owner_tbl, type_col, conn)} = #{conn.quote(type_name)}
-                  AND #{quoted(dep_tbl, dep_pk, conn)} = #{quoted(owner_tbl, fk, conn)}
+                WHERE #{quoted(owner_tbl, type_col, conn)} =
+                      #{conn.quote(type_name)}
+                  AND #{quoted(dep_tbl, dep_pk, conn)} =
+                      #{quoted(owner_tbl, fk, conn)}
                 LIMIT 1
               ), #{epoch})
             SQL
           end
 
           return epoch if parts.empty?
+
           greatest(parts, conn)
         end
 
@@ -211,7 +235,8 @@ module Etlify
         end
 
         def quoted(table, column, conn)
-          "#{conn.quote_table_name(table)}.#{conn.quote_column_name(column)}"
+          "#{conn.quote_table_name(table)}." \
+            "#{conn.quote_column_name(column)}"
         end
 
         def safe_constantize(str)
