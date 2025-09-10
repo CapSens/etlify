@@ -9,6 +9,7 @@ module Etlify
           targets = models || etlified_models
           targets.each_with_object({}) do |model, h|
             next unless model.table_exists?
+
             h[model] = stale_relation_for(model)
           end
         end
@@ -19,6 +20,7 @@ module Etlify
         def etlified_models
           ActiveRecord::Base.descendants.select do |m|
             next false unless m.respond_to?(:table_exists?) && m.table_exists?
+
             m.respond_to?(:etlify_crm_object_type) &&
               m.etlify_crm_object_type.present?
           end
@@ -33,10 +35,10 @@ module Etlify
 
           crm_tbl = CrmSynchronisation.table_name
           crm_last_synced =
-            "COALESCE(#{quoted(crm_tbl, "last_synced_at", conn)}, #{epoch})"
+            "COALESCE(#{quoted(crm_tbl, 'last_synced_at', conn)}, #{epoch})"
 
           where_sql = <<-SQL.squish
-            #{quoted(crm_tbl, "id", conn)} IS NULL OR
+            #{quoted(crm_tbl, 'id', conn)} IS NULL OR
             #{crm_last_synced} < (#{threshold_sql})
           SQL
 
@@ -52,12 +54,13 @@ module Etlify
           owner_tbl = model.table_name
 
           parts = [
-            "COALESCE(#{quoted(owner_tbl, "updated_at", conn)}, #{epoch})"
+            "COALESCE(#{quoted(owner_tbl, 'updated_at', conn)}, #{epoch})",
           ]
 
           Array(model.try(:etlify_dependencies)).each do |dep_name|
             reflection = model.reflect_on_association(dep_name)
             next unless reflection
+
             parts << dependency_max_timestamp_sql(model, reflection, epoch)
           end
 
@@ -87,7 +90,7 @@ module Etlify
             fk      = reflection.foreign_key
 
             sub = <<-SQL.squish
-              SELECT #{quoted(dep_tbl, "updated_at", conn)}
+              SELECT #{quoted(dep_tbl, 'updated_at', conn)}
               FROM #{conn.quote_table_name(dep_tbl)}
               WHERE #{quoted(dep_tbl, dep_pk, conn)} =
                     #{quoted(owner_tbl, fk, conn)}
@@ -110,9 +113,9 @@ module Etlify
             end
 
             sub = <<-SQL.squish
-              SELECT MAX(#{quoted(dep_tbl, "updated_at", conn)})
+              SELECT MAX(#{quoted(dep_tbl, 'updated_at', conn)})
               FROM #{conn.quote_table_name(dep_tbl)}
-              WHERE #{preds.map { |p| "(#{p})" }.join(" AND ")}
+              WHERE #{preds.map { |p| "(#{p})" }.join(' AND ')}
             SQL
             "COALESCE((#{sub}), #{epoch})"
 
@@ -163,11 +166,11 @@ module Etlify
             end
 
           sub = <<-SQL.squish
-            SELECT MAX(#{quoted(source_tbl, "updated_at", conn)})
+            SELECT MAX(#{quoted(source_tbl, 'updated_at', conn)})
             FROM #{conn.quote_table_name(through_tbl)}
             INNER JOIN #{conn.quote_table_name(source_tbl)}
                     ON #{join_on}
-            WHERE #{preds.map { |p| "(#{p})" }.join(" AND ")}
+            WHERE #{preds.map { |p| "(#{p})" }.join(' AND ')}
           SQL
 
           "COALESCE((#{sub}), #{epoch})"
@@ -191,7 +194,7 @@ module Etlify
 
             <<-SQL.squish
               COALESCE((
-                SELECT #{quoted(dep_tbl, "updated_at", conn)}
+                SELECT #{quoted(dep_tbl, 'updated_at', conn)}
                 FROM #{conn.quote_table_name(dep_tbl)}
                 WHERE #{quoted(owner_tbl, type_col, conn)} =
                       #{conn.quote(type_name)}
@@ -203,6 +206,7 @@ module Etlify
           end
 
           return epoch if parts.empty?
+
           greatest(parts, conn)
         end
 
@@ -213,7 +217,7 @@ module Etlify
           return parts.first if parts.size == 1
 
           fn = greatest_function_name(conn)
-          "#{fn}(#{parts.join(", ")})"
+          "#{fn}(#{parts.join(', ')})"
         end
 
         def greatest_function_name(conn)

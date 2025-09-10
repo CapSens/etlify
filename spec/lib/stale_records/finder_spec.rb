@@ -78,7 +78,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
       expect(result.keys).to contain_exactly(User)
     end
 
-    context "when has_many :through with FK on source "\
+    context "when has_many :through with FK on source " \
         "(subscriptions via profiles)" do
       before(:all) do
         # Create missing tables for this focused scenario
@@ -103,25 +103,25 @@ RSpec.describe Etlify::StaleRecords::Finder do
           self.table_name = "users_profiles"
           belongs_to :user
           has_many :subscriptions,
-                  class_name: "Subscription",
-                  foreign_key: :users_profile_id,
-                  inverse_of: :profile,
-                  dependent: :destroy
+                   class_name: "Subscription",
+                   foreign_key: :users_profile_id,
+                   inverse_of: :profile,
+                   dependent: :destroy
         end
 
         class Subscription < ApplicationRecord
           belongs_to :profile,
-                    class_name: "Users::Profile",
-                    foreign_key: :users_profile_id,
-                    inverse_of: :subscriptions
+                     class_name: "Users::Profile",
+                     foreign_key: :users_profile_id,
+                     inverse_of: :subscriptions
         end
 
         # Extend User for this spec: add through association and dependency
         User.class_eval do
           has_many :profiles,
-                  class_name: "Users::Profile",
-                  inverse_of: :user,
-                  dependent: :destroy
+                   class_name: "Users::Profile",
+                   inverse_of: :user,
+                   dependent: :destroy
           has_many :subscriptions, through: :profiles
 
           # Add :subscriptions to the dependencies list for the Finder
@@ -161,7 +161,6 @@ RSpec.describe Etlify::StaleRecords::Finder do
       end
     end
 
-
     context "when a record has a recent sync but dependency changes later" do
       it "marks it stale based on the greatest updated_at among deps" do
         Timecop.freeze do
@@ -191,7 +190,11 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
     # --- discovery: only etlified models are listed -----------------------------
     it "discovers only models that were etlified", :aggregate_failures do
-      class Widget < ActiveRecord::Base; end rescue nil
+      begin
+        class Widget < ActiveRecord::Base; end
+      rescue
+        nil
+      end
       # Widget is not defined in schema; we only assert that not all descendants
       # are returned, but known etlified models are.
       result = described_class.call
@@ -267,10 +270,21 @@ RSpec.describe Etlify::StaleRecords::Finder do
     # --- adapter portability helpers (greatest / epoch_literal) ------------------
     # We hit the private class methods via .send and a tiny connection double.
     class ConnDouble
-      def initialize(name); @name = name; end
-      def adapter_name; @name; end
-      def quote_table_name(x); %("#{x}"); end
-      def quote_column_name(x); %("#{x}"); end
+      def initialize(name)
+        @name = name
+      end
+
+      def adapter_name
+        @name
+      end
+
+      def quote_table_name(x)
+        %("#{x}")
+      end
+
+      def quote_column_name(x)
+        %("#{x}")
+      end
     end
 
     it "uses MAX on non-Postgres adapters and GREATEST on Postgres", :aggregate_failures do
