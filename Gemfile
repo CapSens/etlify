@@ -2,10 +2,7 @@ source "https://rubygems.org"
 
 gemspec
 
-gem "rails", "~> 7.1"
-gem "activerecord", ">= 7.0"
-gem "activesupport", ">= 7.0"
-gem "activejob", ">= 7.0"
+gem "rails", "~> 7.2"
 
 # Dev
 group :development, :test do

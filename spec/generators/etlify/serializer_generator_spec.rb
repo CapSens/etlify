@@ -26,7 +26,7 @@ RSpec.describe Etlify::Generators::SerializerGenerator, type: :generator do
   describe "template presence" do
     it "exposes a serializer template" do
       path = File.expand_path(
-        "../../lib/generators/etlify/serializer/templates/serializer.rb.tt",
+        "../../../lib/generators/etlify/serializer/templates/serializer.rb.tt",
         __dir__
       )
       expect(File).to exist(path)

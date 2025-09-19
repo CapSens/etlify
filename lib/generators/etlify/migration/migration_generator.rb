@@ -1,4 +1,3 @@
-# lib/generators/etlify/migration/migration_generator.rb
 require "rails/generators"
 require "rails/generators/active_record"
 

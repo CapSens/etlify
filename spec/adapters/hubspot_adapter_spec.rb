@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 require "rails_helper"
 require "etlify/adapters/hubspot_v3_adapter"
 

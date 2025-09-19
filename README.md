@@ -16,15 +16,14 @@ Etlify sits beside your app; it does **not** try to own your domain or backgroun
 
 ## Features at a glance
 
-| Area          | What you get                                                  | Why it helps                                        |
-| ------------- | ------------------------------------------------------------- | --------------------------------------------------- |
-| DSL           | `include Etlify::Model` + `etlified_with(...)` on your models | Opt-in sync with a single line; clear, local intent |
-| Serialisers   | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
-| Adapters      | HubSpot adapter included; plug your own                       | Swap CRMs without touching model code               |
-| Idempotence   | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
-| Jobs          | `crm_sync!` enqueues an ActiveJob (`SyncJob`) or runs inline  | Fits your queue; simple to trigger                  |
-| Delete        | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
-| Configuration | Logger, queue name, digest strategy, adapter                  | Control behaviour without scattering settings       |
+| Area        | What you get                                                  | Why it helps                                        |
+| ----------- | ------------------------------------------------------------- | --------------------------------------------------- |
+| DSL         | `include Etlify::Model` + `etlified_with(...)` on your models | Opt-in sync with a single line; clear, local intent |
+| Serialisers | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
+| Adapters    | HubSpot adapter included; plug your own                       | Swap CRMs without touching model code               |
+| Idempotence | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
+| Jobs        | `crm_sync!` enqueues an ActiveJob (`SyncJob`) or runs inline  | Fits your queue; simple to trigger                  |
+| Delete      | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
 
 ---
 
@@ -75,17 +74,28 @@ Create `config/initializers/etlify.rb`:
 
 ```ruby
 # config/initializers/etlify.rb
-Etlify.configure do |config|
-  # Choose the CRM adapter (default is a NullAdapter; be sure to change it)
-  config.crm_adapter = Etlify::Adapters::HubspotV3Adapter.new(
-    access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
-  )
+require "etlify"
 
-  # Optional settings (shown with defaults)
-  config.digest_strategy = Etlify::Digest.method(:stable_sha256) # -> String
-  config.logger          = Rails.logger
-  config.job_class       = "Etlify::SyncJob"
-  config.job_queue_name  = "low"
+Etlify.configure do |config|
+  Etlify::CRM.register(
+    :hubspot,
+    adapter: Etlify::Adapters::HubspotV3Adapter.new(
+      access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
+    ),
+    options: {job_class: "Etlify::SyncObjectWorker"}
+  )
+  # will provide DSL below for models
+  # hubspot_etlified_with(...)
+
+  # Etlify::CRM.register(
+  #   :another_crm, adapter: Etlify::Adapters::AnotherAdapter,
+  #   options: { job_class: Etlify::SyncJob }
+  # )
+  # will provide DSL below for models
+  # another_crm_etlified_with(...)
+
+  # @digest_strategy = Etlify::Digest.method(:stable_sha256)
+  # @job_queue_name = "low"
 end
 ```
 
@@ -98,13 +108,13 @@ class User < ApplicationRecord
 
   has_many :investments, dependent: :destroy
 
-  etlified_with(
+  hubspot_etlified_with(
     serializer: UserSerializer,
     crm_object_type: "contacts",
     id_property: :id,
     # Only sync when an email exists
     sync_if: ->(user) { user.email.present? },
-    # useful if your serialization include dependencies
+    # useful if your object serialization includes dependencies
     dependencies: [:investments]
   )
 end
@@ -114,10 +124,16 @@ end
 
 ```ruby
 # app/serializers/etlify/user_serializer.rb
-class UserSerializer < Etlify::Serializers::BaseSerializer
+class UserSerializer
+  attr_accessor :user
+
+  # your serializer must implement #intiialize(object) #and as_crm_payload
+  def initialize(user)
+    @user = user
+  end
+
   # Must return a Hash that matches your CRM field names
-  # you can also use to_h method
-  def as_crm_payload(user)
+  def as_crm_payload # or #to_h
     {
       email: user.email,
       firstname: user.first_name,
@@ -136,8 +152,9 @@ end
 ```ruby
 user = User.find(1)
 
-# Async by default (enqueues Etlify.config.sync_job_class (default: "Etlify::SyncJob") on the configured queue)
-user.crm_sync!
+# Async by default (enqueues an Etlify::SyncJob by default)
+# The job class can be overriden when registering the CRM
+user.hubspot_crm_sync! # or user.#{registered_crm_name}_crm_sync!
 
 # Run inline (no job)
 user.crm_sync!(async: false)
@@ -147,37 +164,36 @@ user.crm_sync!(async: false)
 
 ```ruby
 # Inline delete (not enqueued)
-user.crm_delete!
+user.hubspot_crm_delete! # or user.#{registered_crm_name}_crm_delete!
 ```
 
 ### Custom serializer example
 
 ```ruby
 # app/serializers/etlify/company_serializer.rb
-class CompanySerializer < Etlify::Serializers::BaseSerializer
+class CompanySerializer
+  attr_accessor :company
+
+  def initialize(company)
+    @company = company
+  end
+
   # Keep serialisation small and predictable
-  def as_crm_payload(company)
+  def as_crm_payload
     {
       name: company.name,
       domain: company.domain,
-      hs_lead_status: company.lead_status # Example custom property
+      hs_lead_status: company.lead_status
     }
   end
 end
-```
-
-### Swapping adapters
-
-```ruby
-# Switch to a different adapter at runtime (for a test, a rake task, etc.)
-Etlify.config.crm_adapter = MyCrmAdapter.new(api_key: ENV["MYCRM_API_KEY"])
 ```
 
 ---
 
 ## Batch synchronisation
 
-Beyond single-record sync, Etlify provides a **batch resynchronisation API** that targets **all “stale” records** (those whose data has changed in Rails since the last CRM sync). This is useful for:
+Beyond single-record sync, Etlify provides a **batch resynchronisation API** that targets **all “stale” records** (those whose data has changed since the last CRM sync). This is useful for:
 
 - recovering from CRM or worker outages,
 - triggering periodic re-syncs (cron jobs),
@@ -192,21 +208,20 @@ Etlify::StaleRecords::BatchSync.call
 # Restrict to specific models
 Etlify::StaleRecords::BatchSync.call(models: [User, Company])
 
-# Run inline (no jobs), useful for scripts/maintenance
+# Restrict to specifics CRM
+Etlify::StaleRecords::BatchSync.call(crm_name: :hubspot)
+
+# Or both
+Etlify::StaleRecords::BatchSync.call(
+  crm_name: :hubspot,
+  models: [User, Company]
+)
+
+# Run inline (no jobs), useful for scripts/maintenance or testing
 Etlify::StaleRecords::BatchSync.call(async: false)
 
 # Adjust SQL batch size (number of IDs per batch)
 Etlify::StaleRecords::BatchSync.call(batch_size: 1_000)
-
-# Throttle (pause in seconds) between processed records
-Etlify::StaleRecords::BatchSync.call(async: false, throttle: 0.01)
-
-# Dry-run: count without enqueuing or syncing
-Etlify::StaleRecords::BatchSync.call(dry_run: true)
-
-# Custom logger (IO-like)
-logger = Logger.new($stdout)
-Etlify::StaleRecords::BatchSync.call(logger: logger)
 ```
 
 **Return value**
@@ -220,34 +235,26 @@ The method returns a stats Hash:
 }
 ```
 
-> By default, jobs are enqueued via `Etlify.config.sync_job_class`
-> (e.g. `"Etlify::SyncJob"`) and executed by your ActiveJob backend.
+> By default, jobs are enqueued via `"Etlify::SyncJob"` and executed by your
+> ActiveJob backend. It can be overriden per CRM when registering it
+> It is very usefull to handle custom throttling rules
 
-### Examples
-
-```ruby
-# 1) Resync the entire app by enqueuing (production-friendly)
-stats = Etlify::StaleRecords::BatchSync.call
-# => { total: 1532, per_model: { "User"=>920, "Company"=>612 }, errors: 0 }
-
-# 2) Maintenance script, inline execution with slight throttle
-stats = Etlify::StaleRecords::BatchSync.call(
-  async: false,
-  batch_size: 500,
-  throttle: 0.005
+```
+Etlify::CRM.register(
+  :hubspot,
+  adapter: Etlify::Adapters::HubspotV3Adapter.new(
+    access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
+  ),
+  options: {job_class: "Etlify::SyncObjectWorker"}
 )
 
-# 3) Dry-run to estimate scope before the actual run
-preview = Etlify::StaleRecords::BatchSync.call(dry_run: true)
-
-# 4) Targeted run (e.g. only Users) for testing
-only_users = Etlify::StaleRecords::BatchSync.call(models: [User])
+> the chosen class must implement .perform_later(record_class, id, crm_name)
 ```
 
 ### How it works
 
 - `Etlify::StaleRecords::Finder` scans all **etlified models**
-  (those that called `etlified_with`) and builds, for each,
+  (those that called `#{crm_name}_etlified_with`) and builds, for each,
   a **SQL relation selecting only the PKs** of stale records.
 - A record is considered stale if:
   - it **has no** `crm_synchronisation` row, **or**
@@ -262,8 +269,6 @@ only_users = Etlify::StaleRecords::BatchSync.call(models: [User])
   - in **async: false** mode: load each record and pass it to
     `Etlify::Synchronizer.call(record)` **inline**
     (errors are logged and counted without interrupting the batch).
-- The optional `throttle` adds a **short pause** between processed records
-  (useful to protect third-party APIs or the DB when running inline).
 
 ## Best practices
 
@@ -273,7 +278,6 @@ only_users = Etlify::StaleRecords::BatchSync.call(models: [User])
   benefit from **idempotence**.
 - **Dependencies**: declare `dependencies:` accurately in `etlified_with` so
   indirect changes trigger resyncs.
-- **Dry-run** before a large run to estimate load (`dry_run: true`).
 - **Batch size**: adjust `batch_size` to your DB to balance throughput and memory.
 
 ---
@@ -306,8 +310,12 @@ Etlify ships with `Etlify::Adapters::HubspotV3Adapter`. It supports native objec
 
 ```ruby
 Etlify.configure do |config|
-  config.crm_adapter = Etlify::Adapters::HubspotV3Adapter.new(
-    access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
+  Etlify::CRM.register(
+    :hubspot,
+    adapter: Etlify::Adapters::HubspotV3Adapter.new(
+      access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
+    ),
+    options: {job_class: "Etlify::SyncObjectWorker"}
   )
 end
 ```
@@ -324,16 +332,16 @@ end
 class User < ApplicationRecord
   include Etlify::Model
 
-  etlified_with(
+  hubspot_etlified_with(
     serializer: UserSerializer,
     crm_object_type: "contacts",
-    id_property: :cs_capsens_id,
+    id_property: :email,
     sync_if: ->(user) { user.email.present? }
   )
 end
 
 # Later
-user.crm_sync! # Adapter performs an upsert
+user.hubspot_crm_sync! # Adapter performs an upsert
 ```
 
 ### Example: Custom object
@@ -342,7 +350,7 @@ user.crm_sync! # Adapter performs an upsert
 class Subscription < ApplicationRecord
   include Etlify::Model
 
-  etlified_with(
+  hubspot_etlified_with(
     serializer: SubscriptionSerializer,
     crm_object_type: "p1234567_subscription" # Custom object API name,
     id_propery: :id,
@@ -387,7 +395,6 @@ end
 - **Start small**: sync only the fields you truly need in your serializer. You can add more later.
 - **Stable payloads**: avoid non-deterministic fields (timestamps, random IDs) in the payload; they defeat idempotence.
 - **Guard with `sync_if`**: skip incomplete records (e.g. no email) to reduce noise.
-- **Observe logs**: Etlify uses your configured logger; in development, check the console.
 - **Queue selection**: route `SyncJob` to a dedicated low-priority queue to keep UX jobs snappy.
 
 ### Common questions
@@ -430,12 +437,20 @@ bundle exec rspec
 ```ruby
 # In your spec
 fake_adapter = instance_double("Adapter")
-allow(Etlify.config).to receive(:crm_adapter).and_return(fake_adapter)
 allow(fake_adapter).to receive(:upsert!).and_return("crm_123")
 allow(fake_adapter).to receive(:delete!).and_return(true)
 
+# Override the registry for this CRM (ex: :hubspot)
+Etlify::CRM.register(
+  :hubspot,
+  adapter: fake_adapter,
+  options: {}
+)
+
 user = create(:user, email: "someone@example.com")
-user.crm_sync!
+
+# Enqueue or perform a sync for this CRM
+user.hubspot_sync!(async: false)
 
 expect(fake_adapter).to have_received(:upsert!).with(
   object_type: "contacts",
@@ -443,9 +458,8 @@ expect(fake_adapter).to have_received(:upsert!).with(
   id_property: anything,
   crm_id: nil
 )
-```
 
-> For end-to-end tests, use VCR or WebMock around your adapter, but prefer unit-level tests against your serialisers and model logic.
+```
 
 ---
 
