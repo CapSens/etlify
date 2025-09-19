@@ -1,12 +1,9 @@
 require "rails_helper"
 
 RSpec.describe Etlify::Model do
-  # Simple fake adapter used by the registry
-  let(:dummy_adapter) do
-    Class.new
-  end
+  # ----------------------- Shared test doubles -----------------------
+  let(:dummy_adapter) { Class.new }
 
-  # Minimal serializer returning a hash payload
   let(:dummy_serializer) do
     Class.new do
       def initialize(record)
@@ -20,7 +17,6 @@ RSpec.describe Etlify::Model do
   end
 
   before do
-    # Stub CRM registry for deterministic behavior in all examples
     reg_item = Etlify::CRM::RegistryItem.new(
       name: :hubspot,
       adapter: dummy_adapter,
@@ -38,6 +34,7 @@ RSpec.describe Etlify::Model do
     end
   end
 
+  # ----------------------- Existing test suite -----------------------
   describe "included hook" do
     it "tracks including classes and defines class_attribute" do
       klass = build_including_class
@@ -66,12 +63,9 @@ RSpec.describe Etlify::Model do
     it "reinstalls DSL and helpers on all previous classes" do
       klass = build_including_class
 
-      # Make the call deterministic: only our klass is considered
       allow(described_class).to receive(:__included_klasses__)
         .and_return([klass])
 
-      # We expect the installer to call the two Model methods, even if
-      # they early-return because definitions already exist.
       expect(described_class).to receive(:define_crm_dsl_on)
         .with(klass, :hubspot).and_call_original
       expect(described_class).to receive(:define_crm_instance_helpers_on)
@@ -79,7 +73,6 @@ RSpec.describe Etlify::Model do
 
       described_class.install_dsl_for_crm(:hubspot)
 
-      # Methods should still be present after reinstall.
       expect(klass.respond_to?(:hubspot_etlified_with)).to be true
       expect(klass.instance_methods).to include(:hubspot_build_payload)
     end
@@ -125,7 +118,6 @@ RSpec.describe Etlify::Model do
       klass = build_including_class
       described_class.define_crm_dsl_on(klass, :hubspot)
 
-      # Call DSL without sync_if keyword
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
@@ -134,15 +126,12 @@ RSpec.describe Etlify::Model do
 
       conf = klass.etlify_crms[:hubspot]
       expect(conf[:guard]).to be_a(Proc)
-
-      # By default, it should always return true
       expect(conf[:guard].call(double("record"))).to be true
       expect(klass.new.send(:allow_sync_for?, :hubspot)).to be true
     end
 
     it "does not clobber other CRM entries in etlify_crms" do
       klass = build_including_class
-      # Use the real writer so the attribute can be updated by the DSL
       klass.etlify_crms = {salesforce: {anything: 1}}
 
       described_class.define_crm_dsl_on(klass, :hubspot)
@@ -179,7 +168,6 @@ RSpec.describe Etlify::Model do
     end
 
     it "delegates payload helper with crm_name keyword" do
-      # Capture the keywords passed to build_crm_payload
       klass = build_including_class do
         attr_reader :seen_kw
         def build_crm_payload(**kw)
@@ -201,9 +189,7 @@ RSpec.describe Etlify::Model do
         end
       end
       inst = klass.new
-      expect(
-        inst.hubspot_sync!(async: false, job_class: "X")
-      ).to eq(:done)
+      expect(inst.hubspot_sync!(async: false, job_class: "X")).to eq(:done)
       expect(inst.seen_sync).to eq(
         {crm_name: :hubspot, async: false, job_class: "X"}
       )
@@ -221,9 +207,29 @@ RSpec.describe Etlify::Model do
       expect(inst.hubspot_delete!).to eq(:deleted)
       expect(inst.seen_del).to eq({crm_name: :hubspot})
     end
+
+    it "defines registered_crms only if missing" do
+      klass = build_including_class do
+        # Predefine to assert no overwrite happens.
+        def registered_crms
+          ["predefined"]
+        end
+      end
+
+      described_class.define_crm_instance_helpers_on(klass, :hubspot)
+      expect(klass.new.registered_crms).to eq(["predefined"])
+    end
   end
 
   describe "#build_crm_payload" do
+    it "raises when crm_name is missing" do
+      klass = build_including_class
+      inst = klass.new
+      expect { inst.build_crm_payload }.to(
+        raise_error(ArgumentError, /crm_name is required/)
+      )
+    end
+
     it "raises when CRM is not configured" do
       klass = build_including_class
       inst = klass.new
@@ -232,7 +238,7 @@ RSpec.describe Etlify::Model do
       end.to raise_error(ArgumentError, /crm not configured/)
     end
 
-    it "works with crm_name: and returns serializer payload" do
+    it "uses as_crm_payload when available" do
       klass = build_including_class do
         def self.etlify_crms
           {
@@ -254,23 +260,26 @@ RSpec.describe Etlify::Model do
         end
       end
       inst = klass.new
-      expect(inst.build_crm_payload(crm_name: :hubspot))
-        .to eq(email: "x@y", ok: true)
+      expect(inst.build_crm_payload(crm_name: :hubspot)).to(
+        eq(email: "x@y", ok: true)
+      )
     end
 
-    it "also accepts legacy crm: keyword" do
+    it "falls back to to_h when as_crm_payload is missing" do
+      serializer = Class.new do
+        def initialize(_)
+        end
+
+        def to_h
+          {via: :to_h}
+        end
+      end
+
       klass = build_including_class do
-        def self.etlify_crms
+        define_singleton_method(:etlify_crms) do
           {
             hubspot: {
-              serializer: Class.new do
-                def initialize(_)
-                end
-
-                def as_crm_payload
-                  {legacy: true}
-                end
-              end,
+              serializer: serializer,
               guard: ->(_r) { true },
               crm_object_type: :contact,
               id_property: :external_id,
@@ -279,8 +288,36 @@ RSpec.describe Etlify::Model do
           }
         end
       end
-      inst = klass.new
-      expect(inst.build_crm_payload(crm: :hubspot)).to eq(legacy: true)
+
+      expect(klass.new.build_crm_payload(crm_name: :hubspot)).to(
+        eq(via: :to_h)
+      )
+    end
+
+    it "raises when serializer has neither as_crm_payload nor to_h" do
+      # Define a constant so the class body can reference it reliably.
+      stub_const("BadSerializer", Class.new do
+        def initialize(_)
+        end
+      end)
+
+      klass = build_including_class do
+        def self.etlify_crms
+          {
+            hubspot: {
+              serializer: BadSerializer,
+              guard: ->(_r) { true },
+              crm_object_type: :contact,
+              id_property: :external_id,
+              adapter: Class.new,
+            },
+          }
+        end
+      end
+
+      expect do
+        klass.new.build_crm_payload(crm_name: :hubspot)
+      end.to raise_error(ArgumentError, /Serializer must implement/)
     end
   end
 
@@ -296,13 +333,13 @@ RSpec.describe Etlify::Model do
           {
             hubspot: {
               serializer: Class.new do
-  def initialize(*)
-  end
+                def initialize(*)
+                end
 
-  def as_crm_payload
-    {}
-  end
-end,
+                def as_crm_payload
+                  {}
+                end
+              end,
               guard: ->(_r) { true },
               crm_object_type: :contact,
               id_property: :external_id,
@@ -313,6 +350,13 @@ end,
       end
     end
 
+    it "requires crm_name" do
+      inst = klass.new
+      expect { inst.crm_sync! }.to(
+        raise_error(ArgumentError, /crm_name is required/)
+      )
+    end
+
     it "returns false when guard forbids sync" do
       inst = klass.new
       allow(inst).to receive(:allow_sync_for?).with(:hubspot).and_return(false)
@@ -321,28 +365,44 @@ end,
 
     it "enqueues with perform_later when available" do
       job = Class.new do
-  def self.perform_later(*)
-  end
-end
+        def self.perform_later(*)
+        end
+      end
       inst = klass.new
       allow(inst).to receive(:allow_sync_for?).and_return(true)
       allow(inst).to receive(:resolve_job_class_for).and_return(job)
-      expect(job).to receive(:perform_later)
-        .with(klass.name, 42, "hubspot")
+      expect(job).to receive(:perform_later).with(klass.name, 42, "hubspot")
       inst.crm_sync!(crm_name: :hubspot, async: true)
     end
 
     it "enqueues with perform_async when available" do
       job = Class.new do
-  def self.perform_async(*)
-  end
-end
+        def self.perform_async(*)
+        end
+      end
       inst = klass.new
       allow(inst).to receive(:allow_sync_for?).and_return(true)
       allow(inst).to receive(:resolve_job_class_for).and_return(job)
-      expect(job).to receive(:perform_async)
-        .with(klass.name, 42, "hubspot")
+      expect(job).to receive(:perform_async).with(klass.name, 42, "hubspot")
       inst.crm_sync!(crm_name: :hubspot, async: true)
+    end
+
+    it "accepts override job_class as String and constantizes it" do
+      stub_const("MyInlineJob", Class.new do
+        def self.perform_later(*)
+        end
+      end)
+      inst = klass.new
+      allow(inst).to receive(:allow_sync_for?).and_return(true)
+
+      expect(MyInlineJob).to receive(:perform_later)
+        .with(klass.name, 42, "hubspot")
+
+      inst.crm_sync!(
+        crm_name: :hubspot,
+        async: true,
+        job_class: "MyInlineJob"
+      )
     end
 
     it "raises when no job API is available" do
@@ -362,46 +422,22 @@ end
         .with(inst, crm_name: :hubspot)
       inst.crm_sync!(crm_name: :hubspot, async: false)
     end
-
-    it "accepts job_class override as String and constantizes it" do
-      job = Class.new do
-  def self.perform_later(*)
-  end
-end
-      stub_const("MyInlineJob", job)
-      inst = klass.new
-      allow(inst).to receive(:allow_sync_for?).and_return(true)
-      expect(job).to receive(:perform_later)
-      inst.crm_sync!(crm_name: :hubspot, async: true, job_class: "MyInlineJob")
-    end
-
-    it "also accepts legacy crm: keyword" do
-      job = Class.new do
-  def self.perform_later(*)
-  end
-end
-      inst = klass.new
-      allow(inst).to receive(:allow_sync_for?).and_return(true)
-      allow(inst).to receive(:resolve_job_class_for).and_return(job)
-      expect(job).to receive(:perform_later)
-        .with(klass.name, 42, "hubspot")
-      inst.crm_sync!(crm: :hubspot, async: true)
-    end
   end
 
   describe "#crm_delete!" do
+    it "requires crm_name" do
+      klass = build_including_class
+      inst = klass.new
+      expect { inst.crm_delete! }.to(
+        raise_error(ArgumentError, /crm_name is required/)
+      )
+    end
+
     it "delegates to Etlify::Deleter.call" do
       klass = build_including_class
       inst = klass.new
       expect(Etlify::Deleter).to receive(:call).with(inst, crm_name: :hubspot)
       inst.crm_delete!(crm_name: :hubspot)
-    end
-
-    it "also accepts legacy crm: keyword" do
-      klass = build_including_class
-      inst = klass.new
-      expect(Etlify::Deleter).to receive(:call).with(inst, crm_name: :hubspot)
-      inst.crm_delete!(crm: :hubspot)
     end
   end
 
@@ -447,7 +483,18 @@ end
       expect(out).to eq(job)
     end
 
-    it "falls back to Etlify::SyncJob when no override or conf job_class is given" do
+    it "uses conf job_class Class without constantizing" do
+      job_class = Class.new
+      klass = build_including_class do
+        define_singleton_method(:etlify_crms) do
+          {hubspot: {job_class: job_class}}
+        end
+      end
+      out = klass.new.send(:resolve_job_class_for, :hubspot, override: nil)
+      expect(out).to eq(job_class)
+    end
+
+    it "falls back to Etlify::SyncJob when no override/conf job_class" do
       klass = build_including_class do
         def self.etlify_crms
           {hubspot: {}}
@@ -495,6 +542,72 @@ end
       expect do
         klass.new.send(:raise_unless_crm_is_configured, :hubspot)
       end.not_to raise_error
+    end
+  end
+
+  # ----------------------- AR-specific branches -----------------------
+  context "with ActiveRecord models" do
+    before(:all) do
+      # Create a dedicated table for the AR model defined below.
+      ActiveRecord::Schema.define do
+        create_table :etlify_things, force: true do |t|
+          t.string :name
+          t.timestamps
+        end
+      end
+    end
+
+    after(:all) do
+      # Keep the in-memory DB clean across random order runs.
+      ActiveRecord::Base.connection.drop_table(:etlify_things)
+    end
+
+    class EtlifyThing < ApplicationRecord
+      self.table_name = "etlify_things"
+      include Etlify::Model
+    end
+
+    it "adds has_many :crm_synchronisations when included" do
+      assoc = EtlifyThing.reflect_on_association(:crm_synchronisations)
+      expect(assoc).not_to be_nil
+      expect(assoc.macro).to eq(:has_many)
+
+      # Verify the default scope actually orders by id ASC.
+      thing = EtlifyThing.create!(name: "x")
+
+      older = CrmSynchronisation.create!(
+        crm_name: "hubspot",
+        resource: thing
+      )
+      newer = CrmSynchronisation.create!(
+        crm_name: "salesforce", # different crm_name to satisfy uniqueness
+        resource: thing
+      )
+
+      # Should return records in ascending id order.
+      expect(thing.crm_synchronisations.pluck(:id)).to eq([older.id, newer.id])
+    end
+
+    it "defines a filtered has_one for each CRM" do
+      klass = Class.new(ApplicationRecord) do
+        self.table_name = "etlify_things"
+        include Etlify::Model
+      end
+
+      assoc = klass.reflect_on_association(:hubspot_crm_synchronisation)
+      expect(assoc).not_to be_nil
+      expect(assoc.macro).to eq(:has_one)
+
+      expect(assoc.scope).to be_a(Proc)
+    end
+
+    it "crm_synced? reflects presence of a singular association" do
+      inst = EtlifyThing.new
+      # Simulate a singular method returning nil then a stub value.
+      expect(inst.crm_synced?).to be false
+
+      inst.define_singleton_method(:crm_synchronisation) { Object.new }
+      expect(inst.crm_synced?).to be true
     end
   end
 end

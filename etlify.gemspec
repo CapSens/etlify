@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 Gem::Specification.new do |spec|
   spec.name          = "etlify"
   spec.version       = File.read(File.expand_path("lib/etlify/version.rb", __dir__)).match(/VERSION = "([^"]+)"/)[1]

@@ -1,6 +1,3 @@
-# spec/etlify/stale_records/batch_sync_spec.rb
-# frozen_string_literal: true
-
 require "rails_helper"
 
 RSpec.describe Etlify::StaleRecords::BatchSync do

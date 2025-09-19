@@ -65,7 +65,12 @@ module Etlify
         errors = 0
         pk     = model.primary_key.to_sym
 
-        relation.in_batches(of: @batch_size) do |batch_rel|
+        # Important : on fait porter le batching par la table du modèle
+        # (qui a bien "users.id", "companies.id", etc.), et on met la sous-requête
+        # (relation) dans un IN(...) pour éviter l'erreur "no such column: users.id".
+        base_scope = model.unscoped.where(pk => relation)
+
+        base_scope.in_batches(of: @batch_size) do |batch_rel|
           ids = batch_rel.pluck(pk)
           next if ids.empty?
 
@@ -73,7 +78,7 @@ module Etlify
             enqueue_async(model, ids, crm_name: crm_name)
             count += ids.size
           else
-            # Load full records only when performing inline.
+            # On charge les enregistrements complets uniquement en mode inline.
             model.where(pk => ids).find_each(batch_size: @batch_size) do |rec|
               service = Etlify::Synchronizer.call(rec, crm_name: crm_name)
               count += 1

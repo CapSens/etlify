@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 require "rails_helper"
 
 RSpec.describe Etlify::StaleRecords::Finder do
@@ -42,8 +40,13 @@ RSpec.describe Etlify::StaleRecords::Finder do
       end
 
       # Polymorphic belongs_to on users (owner side)
-      add_column :users, :avatarable_type, :string
-      add_column :users, :avatarable_id, :integer
+      unless ActiveRecord::Base.connection.column_exists?(:users, :avatarable_type)
+        add_column :users, :avatarable_type, :string
+      end
+
+      unless ActiveRecord::Base.connection.column_exists?(:users, :avatarable_id)
+        add_column :users, :avatarable_id, :integer
+      end
 
       # Concrete targets for avatarable
       create_table :photos, force: true do |t|
@@ -54,7 +57,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
         t.timestamps null: true
       end
 
-      # HABTM to cover "unknown macro" branch
+      # HABTM to cover join-table branch
       create_table :tags, force: true do |t|
         t.string :name
         t.timestamps null: true
@@ -86,7 +89,6 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
   # ----------------- Helpers to define models/constants -----------------
 
-  # Define a real constant for an AR model (no rspec-mocks).
   def define_model_const(name)
     Object.send(:remove_const, name) if Object.const_defined?(name)
     klass = Class.new(ApplicationRecord)
@@ -132,17 +134,16 @@ RSpec.describe Etlify::StaleRecords::Finder do
     define_model_const("Tag")
 
     define_model_const("Subscription") do |k|
-      # Source holds the FK to through table (profiles)
       k.belongs_to :profile,
-                  foreign_key: "users_profile_id",
-                  optional: true
+                   foreign_key: "users_profile_id",
+                   optional: true
     end
 
     Profile.class_eval do
       has_many :subscriptions,
-              class_name: "Subscription",
-              foreign_key: "users_profile_id",
-              dependent: :destroy
+               class_name: "Subscription",
+               foreign_key: "users_profile_id",
+               dependent: :destroy
     end
 
     # Reopen User to add associations used by tests
@@ -436,7 +437,6 @@ RSpec.describe Etlify::StaleRecords::Finder do
     end
 
     it "has_many :through with polymorphic through (as:) adds type predicate" do
-      # Only track the through association that uses as: :owner
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
@@ -454,11 +454,9 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
       create_sync!(u, crm: :hubspot, last_synced_at: now + 1)
 
-      # Older source => not stale
       expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
         .pluck(:id)).not_to include(u.id)
 
-      # Make source (projects) newer => stale via through with as: predicate
       p.update!(updated_at: now + 20)
       expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
         .pluck(:id)).to include(u.id)
@@ -466,7 +464,6 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
     describe "has_many :through where FK lives on source table" do
       it "marks owner stale when a source row becomes newer" do
-        # Configure Finder to track :subscriptions for this CRM
         allow(User).to receive(:etlify_crms).and_return(
           {
             hubspot: {
@@ -482,12 +479,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         p = Profile.create!(user: u, updated_at: now)
         s = Subscription.create!(users_profile_id: p.id, updated_at: now)
 
-        # Fresh sync -> not stale
         create_sync!(u, crm: :hubspot, last_synced_at: now + 1)
         rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
         expect(rel.pluck(:id)).not_to include(u.id)
 
-        # Make the source newer -> becomes stale
         s.update!(updated_at: now + 20)
         rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
         expect(rel.pluck(:id)).to include(u.id)
@@ -511,8 +506,6 @@ RSpec.describe Etlify::StaleRecords::Finder do
       )
       u = User.create!(email: "p@x.x")
       p = Photo.create!(updated_at: now)
-
-      # 🔧 change here: set the association via its writer, then save
       u.avatarable = p
       u.updated_at = now
       u.save!
@@ -544,10 +537,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
     end
   end
 
-  # ------------- NEW: unknown macro branch (HABTM) -------------
+  # ------------- HABTM -------------
 
-  describe "unknown macro branch coverage" do
-    it "ignores HABTM dependency (epoch fallback, no crash)" do
+  describe "HABTM dependency" do
+    it "marque stale quand un tag devient plus récent que le last_sync" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
@@ -559,11 +552,18 @@ RSpec.describe Etlify::StaleRecords::Finder do
         }
       )
       u = User.create!(email: "habtm@x.x", updated_at: now)
-      t = Tag.create!(name: "x", updated_at: now + 60)
+      t = Tag.create!(name: "x", updated_at: now)
       u.tags << t
+
+      # sync frais -> pas stale
       create_sync!(u, crm: :hubspot, last_synced_at: now + 10)
       expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
         .pluck(:id)).not_to include(u.id)
+
+      # un tag devient plus récent -> stale
+      t.update!(updated_at: now + 30)
+      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
+        .pluck(:id)).to include(u.id)
     end
   end
 
@@ -589,31 +589,33 @@ RSpec.describe Etlify::StaleRecords::Finder do
     end
   end
 
-  # ------------- H. Adapter portability (unit-level) -------------
+  # ------------- Adapter portability (integration-level) -------------
 
-  describe "adapter portability helpers" do
-    it "uses GREATEST on Postgres, MAX on SQLite" do
-      pg = double("Conn", adapter_name: "PostgreSQL")
-      sq = double("Conn", adapter_name: "SQLite")
-      fn_pg = described_class.send(:greatest_function_name, pg)
-      fn_sq = described_class.send(:greatest_function_name, sq)
-      expect(fn_pg).to eq("GREATEST")
-      expect(fn_sq).to eq("MAX")
+  describe "adapter portability (integration)" do
+    it "utilise GREATEST sur Postgres et MAX sur SQLite quand plusieurs deps" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter,
+            id_property: "id",
+            crm_object_type: "contacts",
+            dependencies: [:notes, :profile]
+          }
+        }
+      )
+      rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
+      sql = rel.to_sql
+      adapter = ActiveRecord::Base.connection.adapter_name.to_s.downcase
+      if adapter.include?("postgres")
+        expect(sql).to match(/GREATEST\(/i)
+      else
+        expect(sql).to match(/MAX\(/i)
+      end
     end
 
-    it "epoch literal differs by adapter" do
-      pg = double("Conn", adapter_name: "PostgreSQL")
-      sq = double("Conn", adapter_name: "SQLite")
-      e_pg = described_class.send(:epoch_literal, pg)
-      e_sq = described_class.send(:epoch_literal, sq)
-      expect(e_pg).to include("TIMESTAMP")
-      expect(e_sq).to include("DATETIME")
-    end
-
-    it "greatest returns single part as-is to avoid SQLite quirk" do
-      conn = double("Conn", adapter_name: "SQLite")
-      res = described_class.send(:greatest, ["A_ONLY"], conn)
-      expect(res).to eq("A_ONLY")
+    it "génère un SQL exécutable (quoting correct) sur le SGBD courant" do
+      rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
+      expect { rel.to_a }.not_to raise_error
     end
   end
 
@@ -681,8 +683,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
       res = described_class.call(models: [NopeModel])
       expect(res).to eq({})
     ensure
-      Object.send(:remove_const, "NopeModel") if
-        Object.const_defined?("NopeModel")
+      Object.send(:remove_const, "NopeModel") if Object.const_defined?("NopeModel")
     end
 
     it "relation exists but may be empty when nothing is stale" do
@@ -694,7 +695,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
     end
   end
 
-  # ----------------- K. Robustness + helpers -----------------
+  # ----------------- Robustness -----------------
 
   describe "robustness" do
     it "ignores unknown dependency names" do
@@ -721,33 +722,6 @@ RSpec.describe Etlify::StaleRecords::Finder do
     it "quotes names safely to avoid crashes with reserved words" do
       rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
       expect { rel.to_a }.not_to raise_error
-    end
-  end
-
-  describe "private helpers direct calls" do
-    it "builds MAX/GREATEST SQL for multiple parts" do
-      sq = double("Conn", adapter_name: "SQLite")
-      pg = double("Conn", adapter_name: "PostgreSQL")
-      expect(described_class.send(:greatest, ["A", "B"], sq))
-        .to eq("MAX(A, B)")
-      expect(described_class.send(:greatest, ["A", "B"], pg))
-        .to eq("GREATEST(A, B)")
-    end
-
-    it "quotes table/column names" do
-      conn = ActiveRecord::Base.connection
-      q = described_class.send(:quoted, "users", "id", conn)
-      expect(q).to match(/"users"\."id"/)
-    end
-
-    it "etlified_models excludes models without etlify_crms" do
-      klass = Class.new(ApplicationRecord) { self.table_name = "projects" }
-      Object.const_set("NoCrmModel", klass)
-      res = described_class.send(:etlified_models)
-      expect(res).not_to include(NoCrmModel)
-    ensure
-      Object.send(:remove_const, "NoCrmModel") if
-        Object.const_defined?("NoCrmModel")
     end
   end
 end

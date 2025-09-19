@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 module RSpecTimeHelpers
   # Internal stack to support nested freeze/travel
   def __time_stack

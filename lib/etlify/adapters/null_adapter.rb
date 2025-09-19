@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 module Etlify
   module Adapters
     # Adapter no-op pour dev/test

@@ -125,21 +125,19 @@ module Etlify
 
     # ---------- Public generic API (CRM-aware) ----------
 
-    def crm_synced?(crm: nil)
-      # Keep backward-compatible single-sync check if association exists.
+    def crm_synced?(crm_name: nil)
       respond_to?(:crm_synchronisation) && crm_synchronisation.present?
     end
 
-    def build_crm_payload(crm_name: nil, crm: nil)
-      crm_name ||= crm
+    def build_crm_payload(crm_name: nil)
       raise ArgumentError, "crm_name is required" if crm_name.nil?
 
       raise_unless_crm_is_configured(crm_name)
 
-      conf = self.class.etlify_crms.fetch(crm.to_sym)
-      serializer = conf[:serializer].new(self).as_crm_payload
+      conf = self.class.etlify_crms.fetch(crm_name.to_sym)
+      serializer = conf[:serializer].new(self)
 
-      if serializer.respond_to(:as_crm_payload)
+      if serializer.respond_to?(:as_crm_payload)
         serializer.as_crm_payload
       elsif serializer.respond_to?(:to_h)
         serializer.to_h
@@ -148,8 +146,7 @@ module Etlify
       end
     end
 
-    def crm_sync!(crm_name: nil, async: true, job_class: nil, crm: nil)
-      crm_name ||= crm
+    def crm_sync!(crm_name: nil, async: true, job_class: nil)
       raise ArgumentError, "crm_name is required" if crm_name.nil?
       return false unless allow_sync_for?(crm_name)
 
@@ -167,8 +164,7 @@ module Etlify
       end
     end
 
-    def crm_delete!(crm_name: nil, crm: nil)
-      crm_name ||= crm
+    def crm_delete!(crm_name: nil)
       raise ArgumentError, "crm_name is required" if crm_name.nil?
 
       Etlify::Deleter.call(self, crm_name: crm_name)

@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 module AJTestAdapterHelpers
   def aj_set_test_adapter!
     ActiveJob::Base.queue_adapter =

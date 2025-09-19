@@ -18,6 +18,10 @@ module Etlify
       @crm_name = crm_name.to_sym
       @conf    = resource.class.etlify_crms.fetch(@crm_name)
       @adapter = @conf[:adapter]
+
+      if @adapter.is_a?(Class) || !@adapter.respond_to?(:upsert!)
+        raise ArgumentError, "Adapter must be an instance responding to upsert!"
+      end
     end
 
     def call
@@ -25,9 +29,8 @@ module Etlify
         if sync_line.stale?(digest)
           crm_id = adapter.upsert!(
             payload: payload,
-            id_property: @record.etlify_id_property,
-            object_type: @record.etlify_crm_object_type,
-            crm_id: sync_line.crm_id.presence
+            id_property: conf[:id_property],
+            object_type: conf[:crm_object_type]
           )
 
           sync_line.update!(
@@ -44,7 +47,7 @@ module Etlify
           :not_modified
         end
       end
-    rescue StandardError => e
+    rescue => e
       sync_line.update!(last_error: e.message)
 
       :error

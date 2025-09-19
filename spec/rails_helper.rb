@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 require "simplecov"
 SimpleCov.start "rails"
 
@@ -13,6 +11,7 @@ require "active_support"
 require "active_support/time"                 # for Time.current / time zone
 require "support/time_helpers"
 require "support/aj_test_adapter_helpers"
+require "timecop"
 
 require "etlify"
 
