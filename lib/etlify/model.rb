@@ -65,7 +65,7 @@ module Etlify
 
       if serializer.respond_to?(:to_h)
         serializer.to_h
-      else serializer.respond_to?(:as_crm_payload)
+      else
         serializer.as_crm_payload
       end
     end
