@@ -44,7 +44,7 @@ RSpec.describe Etlify::Deleter do
 
       adapter_class = Class.new do
         # Keep English comments and ≤85 chars per line
-        define_method(:delete!) do |crm_id:, object_type:, id_property:|
+        define_method(:delete!) do |crm_id:, object_type:|
           true
         end
       end
@@ -62,8 +62,7 @@ RSpec.describe Etlify::Deleter do
 
       expect(adapter_instance).to receive(:delete!).with(
         crm_id: "crm-123",
-        object_type: "contacts",
-        id_property: "id"
+        object_type: "contacts"
       ).and_return(true)
 
       res = described_class.call(user, crm_name: :hubspot)
@@ -74,7 +73,7 @@ RSpec.describe Etlify::Deleter do
 
   context "when adapter.delete! raises" do
     class FailingDeleteAdapter
-      def delete!(crm_id:, object_type:, id_property:)
+      def delete!(crm_id:, object_type:)
         raise "remote failure"
       end
     end
@@ -84,7 +83,6 @@ RSpec.describe Etlify::Deleter do
         {
           hubspot: {
             adapter: FailingDeleteAdapter.new,
-            id_property: "id",
             crm_object_type: "contacts",
           },
         }

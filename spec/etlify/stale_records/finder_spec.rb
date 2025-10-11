@@ -1,7 +1,8 @@
 require "rails_helper"
 
 RSpec.describe Etlify::StaleRecords::Finder do
-  # Build extra schema for dependency scenarios
+  # ---------------- Schema bootstrap for dependency scenarios ----------------
+
   before(:all) do
     ActiveRecord::Schema.define do
       create_table :profiles, force: true do |t|
@@ -39,16 +40,16 @@ RSpec.describe Etlify::StaleRecords::Finder do
         t.timestamps null: true
       end
 
-      # Polymorphic belongs_to on users (owner side)
-      unless ActiveRecord::Base.connection.column_exists?(:users, :avatarable_type)
+      unless ActiveRecord::Base.connection
+                 .column_exists?(:users, :avatarable_type)
         add_column :users, :avatarable_type, :string
       end
 
-      unless ActiveRecord::Base.connection.column_exists?(:users, :avatarable_id)
+      unless ActiveRecord::Base.connection
+                 .column_exists?(:users, :avatarable_id)
         add_column :users, :avatarable_id, :integer
       end
 
-      # Concrete targets for avatarable
       create_table :photos, force: true do |t|
         t.timestamps null: true
       end
@@ -57,7 +58,6 @@ RSpec.describe Etlify::StaleRecords::Finder do
         t.timestamps null: true
       end
 
-      # HABTM to cover join-table branch
       create_table :tags, force: true do |t|
         t.string :name
         t.timestamps null: true
@@ -76,18 +76,17 @@ RSpec.describe Etlify::StaleRecords::Finder do
       end
 
       create_table :subscriptions, force: true do |t|
-        # FK lives on the source table -> references profiles.id
+        # FK lives on source table -> references profiles.id
         t.integer :users_profile_id
         t.timestamps null: true
       end
     end
 
     User.reset_column_information
-
     stub_models!
   end
 
-  # ----------------- Helpers to define models/constants -----------------
+  # ----------------------------- Model helpers ------------------------------
 
   def define_model_const(name)
     Object.send(:remove_const, name) if Object.const_defined?(name)
@@ -98,45 +97,45 @@ RSpec.describe Etlify::StaleRecords::Finder do
   end
 
   def stub_models!
-    define_model_const("Profile") do |k|
-      k.belongs_to :user, optional: true
+    define_model_const("Profile") do |klass|
+      klass.belongs_to :user, optional: true
     end
 
-    define_model_const("Note") do |k|
-      k.belongs_to :user, optional: true
+    define_model_const("Note") do |klass|
+      klass.belongs_to :user, optional: true
     end
 
-    define_model_const("Project") do |k|
-      k.has_many :memberships, dependent: :destroy
-      k.has_many :users, through: :memberships
+    define_model_const("Project") do |klass|
+      klass.has_many :memberships, dependent: :destroy
+      klass.has_many :users, through: :memberships
     end
 
-    define_model_const("Membership") do |k|
-      k.belongs_to :user
-      k.belongs_to :project
+    define_model_const("Membership") do |klass|
+      klass.belongs_to :user
+      klass.belongs_to :project
     end
 
-    define_model_const("Upload") do |k|
-      k.belongs_to :owner, polymorphic: true, optional: true
+    define_model_const("Upload") do |klass|
+      klass.belongs_to :owner, polymorphic: true, optional: true
     end
 
-    define_model_const("Activity") do |k|
-      k.belongs_to :subject, polymorphic: true, optional: true
+    define_model_const("Activity") do |klass|
+      klass.belongs_to :subject, polymorphic: true, optional: true
     end
 
-    define_model_const("Linkage") do |k|
-      k.belongs_to :owner, polymorphic: true
-      k.belongs_to :project
+    define_model_const("Linkage") do |klass|
+      klass.belongs_to :owner, polymorphic: true
+      klass.belongs_to :project
     end
 
     define_model_const("Photo")
     define_model_const("Document")
     define_model_const("Tag")
 
-    define_model_const("Subscription") do |k|
-      k.belongs_to :profile,
-                   foreign_key: "users_profile_id",
-                   optional: true
+    define_model_const("Subscription") do |klass|
+      klass.belongs_to :profile,
+                       foreign_key: "users_profile_id",
+                       optional: true
     end
 
     Profile.class_eval do
@@ -146,7 +145,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
                dependent: :destroy
     end
 
-    # Reopen User to add associations used by tests
+    # Extend User with associations needed by tests
     User.class_eval do
       has_one :profile, dependent: :destroy
       has_many :notes, dependent: :destroy
@@ -162,7 +161,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
     end
   end
 
-  # ------------------------------ Helpers ------------------------------
+  # --------------------------------- Utils ----------------------------------
 
   def create_sync!(resource, crm:, last_synced_at:)
     CrmSynchronisation.create!(
@@ -177,12 +176,18 @@ RSpec.describe Etlify::StaleRecords::Finder do
     Time.now
   end
 
-  # Default multi-CRM configuration for User in these specs
+  # Small helper to read ids for a given CRM on User
+  def user_ids_for(crm)
+    described_class.call(crm_name: crm)[User][crm].pluck(:id)
+  end
+
+  # ---------------- Default multi-CRM config stub for User ------------------
+
   before do
     allow(User).to receive(:etlify_crms).and_return(
       {
         hubspot: {
-          adapter: Etlify::Adapters::NullAdapter,
+          adapter: Etlify::Adapters::NullAdapter.new,
           id_property: "id",
           crm_object_type: "contacts",
           dependencies: [
@@ -190,7 +195,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
           ]
         },
         salesforce: {
-          adapter: Etlify::Adapters::NullAdapter,
+          adapter: Etlify::Adapters::NullAdapter.new,
           id_property: "Id",
           crm_object_type: "Lead",
           dependencies: [:company]
@@ -199,248 +204,236 @@ RSpec.describe Etlify::StaleRecords::Finder do
     )
   end
 
-  # ---------------- A. Model discovery / filtering ----------------
+  # --------------------------- A. Model discovery ---------------------------
 
   describe ".call model discovery" do
     it "includes AR descendants with config and existing table" do
-      u = User.create!(email: "a@b.c")
-      res = described_class.call
-      expect(res.keys).to include(User)
-      expect(res[User].keys).to include(:hubspot, :salesforce)
-      expect(res[User][:hubspot].arel.projections.size).to eq(1)
-      expect(res[User][:salesforce].arel.projections.size).to eq(1)
-      expect(u.id).to be_a(Integer)
+      user = User.create!(email: "a@b.c")
+      result = described_class.call
+      expect(result.keys).to include(User)
+      expect(result[User].keys).to include(:hubspot, :salesforce)
+      expect(result[User][:hubspot].arel.projections.size).to eq(1)
+      expect(result[User][:salesforce].arel.projections.size).to eq(1)
+      expect(user.id).to be_a(Integer)
     end
 
     it "when crm_name is given, keeps only models configured for it" do
-      res = described_class.call(crm_name: :hubspot)
-      expect(res.keys).to include(User)
-      expect(res[User].keys).to eq([:hubspot])
+      result = described_class.call(crm_name: :hubspot)
+      expect(result.keys).to include(User)
+      expect(result[User].keys).to eq([:hubspot])
     end
 
     it "when models: is given, restricts to that subset" do
-      res = described_class.call(models: [User])
-      expect(res.keys).to eq([User])
+      result = described_class.call(models: [User])
+      expect(result.keys).to eq([User])
     end
   end
 
-  # ----------------------- B. Return shape -----------------------
+  # ------------------------------ B. Shape ----------------------------------
 
   describe ".call return shape" do
     it "returns { Model => { crm => relation } } for single CRM" do
-      res = described_class.call(crm_name: :hubspot)
-      expect(res).to be_a(Hash)
-      expect(res[User]).to be_a(Hash)
-      expect(res[User][:hubspot]).to be_a(ActiveRecord::Relation)
+      result = described_class.call(crm_name: :hubspot)
+      expect(result).to be_a(Hash)
+      expect(result[User]).to be_a(Hash)
+      expect(result[User][:hubspot]).to be_a(ActiveRecord::Relation)
     end
 
     it "includes one entry per CRM when multiple configured" do
-      res = described_class.call
-      expect(res[User].keys).to contain_exactly(:hubspot, :salesforce)
+      result = described_class.call
+      expect(result[User].keys).to contain_exactly(:hubspot, :salesforce)
     end
 
     it "relations select only primary key" do
-      rel = described_class.call[User][:hubspot]
-      cols = rel.arel.projections
-      expect(cols.size).to eq(1)
+      relation = described_class.call[User][:hubspot]
+      projections = relation.arel.projections
+      expect(projections.size).to eq(1)
     end
   end
 
-  # --------------- C. Join scoping to crm_name ----------------
+  # ----------------------- C. JOIN scoped to crm_name -----------------------
 
   describe "JOIN scoped to crm_name" do
     it "treats missing row for given crm as stale" do
-      u = User.create!(email: "x@x.x")
-      create_sync!(u, crm: :salesforce, last_synced_at: now)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).to include(u.id)
+      user = User.create!(email: "x@x.x")
+      create_sync!(user, crm: :salesforce, last_synced_at: now)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
 
     it "stale only for the outdated CRM" do
-      u = User.create!(email: "x@x.x")
-      create_sync!(u, crm: :hubspot, last_synced_at: now - 3600)
-      create_sync!(u, crm: :salesforce, last_synced_at: now + 3600)
-      res_all = described_class.call
-      expect(res_all[User][:hubspot].pluck(:id)).to include(u.id)
-      expect(res_all[User][:salesforce].pluck(:id)).not_to include(u.id)
+      user = User.create!(email: "x@x.x")
+      create_sync!(user, crm: :hubspot, last_synced_at: now - 3600)
+      create_sync!(user, crm: :salesforce, last_synced_at: now + 3600)
+      all_results = described_class.call
+      expect(all_results[User][:hubspot].pluck(:id)).to include(user.id)
+      expect(all_results[User][:salesforce].pluck(:id))
+        .not_to include(user.id)
     end
 
     it "fresh for both CRMs yields no ids" do
-      u = User.create!(email: "x@x.x", updated_at: now - 10)
-      create_sync!(u, crm: :hubspot, last_synced_at: now)
-      create_sync!(u, crm: :salesforce, last_synced_at: now)
-      res = described_class.call
-      expect(res[User][:hubspot].pluck(:id)).not_to include(u.id)
-      expect(res[User][:salesforce].pluck(:id)).not_to include(u.id)
+      user = User.create!(email: "x@x.x", updated_at: now - 10)
+      create_sync!(user, crm: :hubspot, last_synced_at: now)
+      create_sync!(user, crm: :salesforce, last_synced_at: now)
+      results = described_class.call
+      expect(results[User][:hubspot].pluck(:id)).not_to include(user.id)
+      expect(results[User][:salesforce].pluck(:id)).not_to include(user.id)
     end
   end
 
-  # -------------------- D. Staleness logic --------------------
+  # --------------------------- D. Staleness logic ---------------------------
 
   describe "staleness threshold" do
     it "missing crm_synchronisation row => stale" do
-      u = User.create!(email: "x@x.x")
-      ids = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(ids.pluck(:id)).to include(u.id)
+      user = User.create!(email: "x@x.x")
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
 
     it "NULL last_synced_at acts like epoch and becomes stale" do
-      u = User.create!(email: "x@x.x")
+      user = User.create!(email: "x@x.x")
       CrmSynchronisation.create!(
-        crm_name: "hubspot", resource_type: "User",
-        resource_id: u.id, last_synced_at: nil
+        crm_name: "hubspot",
+        resource_type: "User",
+        resource_id: user.id,
+        last_synced_at: nil
       )
-      ids = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(ids.pluck(:id)).to include(u.id)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
 
-    it "compares strictly: < stale, == not stale, > not stale" do
-      t0 = now
-      u = User.create!(email: "x@x.x", updated_at: t0)
-      create_sync!(u, crm: :hubspot, last_synced_at: t0 - 1)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).to include(u.id)
+    it "compares strictly: < stale, == ok, > ok" do
+      time_zero = now
+      user = User.create!(email: "x@x.x", updated_at: time_zero)
+      create_sync!(user, crm: :hubspot, last_synced_at: time_zero - 1)
+      expect(user_ids_for(:hubspot)).to include(user.id)
 
       CrmSynchronisation.where(
-        resource_id: u.id, crm_name: "hubspot"
-      ).update_all(last_synced_at: t0)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).not_to include(u.id)
+        resource_id: user.id, crm_name: "hubspot"
+      ).update_all(last_synced_at: time_zero)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
 
       CrmSynchronisation.where(
-        resource_id: u.id, crm_name: "hubspot"
-      ).update_all(last_synced_at: t0 + 1)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).not_to include(u.id)
+        resource_id: user.id, crm_name: "hubspot"
+      ).update_all(last_synced_at: time_zero + 1)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
     end
 
     it "no dependencies => threshold is owner's updated_at" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: []
           }
         }
       )
-      u = User.create!(email: "x@x.x", updated_at: now)
-      create_sync!(u, crm: :hubspot, last_synced_at: now - 1)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).to include(u.id)
+      user = User.create!(email: "x@x.x", updated_at: now)
+      create_sync!(user, crm: :hubspot, last_synced_at: now - 1)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
   end
 
-  # ----------------- E. Direct dependencies -----------------
+  # -------------------------- E. Direct dependencies ------------------------
 
   describe "dependencies direct associations" do
     it "belongs_to: updating company makes user stale" do
-      c = Company.create!(name: "ACME")
-      u = User.create!(email: "u@x.x", company: c)
-      create_sync!(u, crm: :hubspot, last_synced_at: now)
-      c.update!(updated_at: now + 10)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).to include(u.id)
+      company = Company.create!(name: "ACME")
+      user = User.create!(email: "u@x.x", company: company)
+      create_sync!(user, crm: :hubspot, last_synced_at: now)
+      company.update!(updated_at: now + 10)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
 
-    it "belongs_to missing target falls back to epoch, not crashing" do
-      u = User.create!(email: "u@x.x", company: nil)
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 10)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).not_to include(u.id)
+    it "belongs_to missing target falls back to epoch safely" do
+      user = User.create!(email: "u@x.x", company: nil)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
     end
 
     it "has_one: updating profile makes user stale" do
-      u = User.create!(email: "u@x.x")
-      p = u.create_profile!
-      create_sync!(u, crm: :hubspot, last_synced_at: now)
-      p.update!(updated_at: now + 10)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).to include(u.id)
+      user = User.create!(email: "u@x.x")
+      profile = user.create_profile!
+      create_sync!(user, crm: :hubspot, last_synced_at: now)
+      profile.update!(updated_at: now + 10)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
 
     it "has_many: newest note updated makes user stale" do
-      u = User.create!(email: "u@x.x")
-      u.notes.create!(body: "a", updated_at: now)
-      u.notes.create!(body: "b", updated_at: now + 20)
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 5)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).to include(u.id)
+      user = User.create!(email: "u@x.x")
+      user.notes.create!(body: "a", updated_at: now)
+      user.notes.create!(body: "b", updated_at: now + 20)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 5)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
 
     it "polymorphic has_many via :as ignores unrelated rows" do
-      u1 = User.create!(email: "u1@x.x")
-      u2 = User.create!(email: "u2@x.x")
-      u1.uploads.create!(path: "p1", updated_at: now)
-      u2.uploads.create!(path: "p2", updated_at: now + 60)
-      create_sync!(u1, crm: :hubspot, last_synced_at: now + 10)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).not_to include(u1.id)
+      first_user = User.create!(email: "u1@x.x")
+      second_user = User.create!(email: "u2@x.x")
+      first_user.uploads.create!(path: "p1", updated_at: now)
+      second_user.uploads.create!(path: "p2", updated_at: now + 60)
+      create_sync!(first_user, crm: :hubspot, last_synced_at: now + 10)
+      expect(user_ids_for(:hubspot)).not_to include(first_user.id)
     end
   end
 
-  # -------- F. Through / polymorphic belongs_to (child side) --------
+  # ----------- F. Through / polymorphic belongs_to (child side) -------------
 
   describe "through and polymorphic belongs_to" do
     it "has_many :through: source newer marks user stale" do
-      u = User.create!(email: "u@x.x")
-      p = Project.create!(name: "P")
-      Membership.create!(user: u, project: p)
-      create_sync!(u, crm: :hubspot, last_synced_at: now)
-      p.update!(updated_at: now + 30)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).to include(u.id)
+      user = User.create!(email: "u@x.x")
+      project = Project.create!(name: "P")
+      Membership.create!(user: user, project: project)
+      create_sync!(user, crm: :hubspot, last_synced_at: now)
+      project.update!(updated_at: now + 30)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
 
     it "polymorphic child: newest concrete subject wins" do
-      u = User.create!(email: "u@x.x")
-      act = Activity.create!(subject: u, updated_at: now)
+      user = User.create!(email: "u@x.x")
+      activity = Activity.create!(subject: user, updated_at: now)
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [:activities]
           }
         }
       )
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 1)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).not_to include(u.id)
-      act.update!(updated_at: now + 10)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).to include(u.id)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 1)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+      activity.update!(updated_at: now + 10)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
 
     it "polymorphic with non-constantizable type is ignored safely" do
-      u = User.create!(email: "u@x.x")
-      ts = now.utc.strftime("%Y-%m-%d %H:%M:%S")
+      user = User.create!(email: "u@x.x")
+      timestamp_str = now.utc.strftime("%Y-%m-%d %H:%M:%S")
       Activity.connection.execute(
-        "INSERT INTO activities (subject_type, subject_id, created_at," \
-        " updated_at) VALUES ('Nope::Missing', 123, '#{ts}', '#{ts}')"
+        "INSERT INTO activities (subject_type, subject_id, created_at, " \
+        "updated_at) VALUES ('Nope::Missing', 123, '#{timestamp_str}', " \
+        "'#{timestamp_str}')"
       )
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [:activities]
           }
         }
       )
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 5)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).not_to include(u.id)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 5)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
     end
 
-    it "has_many :through with polymorphic through (as:) adds type predicate" do
+    it "has_many :through with polymorphic through adds type predicate" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [:poly_projects]
@@ -448,18 +441,15 @@ RSpec.describe Etlify::StaleRecords::Finder do
         }
       )
 
-      u = User.create!(email: "t@x.x")
-      p = Project.create!(name: "P", updated_at: now)
-      Linkage.create!(owner: u, project: p)
+      user = User.create!(email: "t@x.x")
+      project = Project.create!(name: "P", updated_at: now)
+      Linkage.create!(owner: user, project: project)
 
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 1)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 1)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
 
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).not_to include(u.id)
-
-      p.update!(updated_at: now + 20)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).to include(u.id)
+      project.update!(updated_at: now + 20)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
 
     describe "has_many :through where FK lives on source table" do
@@ -467,7 +457,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
         allow(User).to receive(:etlify_crms).and_return(
           {
             hubspot: {
-              adapter: Etlify::Adapters::NullAdapter,
+              adapter: Etlify::Adapters::NullAdapter.new,
               id_property: "id",
               crm_object_type: "contacts",
               dependencies: [:subscriptions]
@@ -475,203 +465,198 @@ RSpec.describe Etlify::StaleRecords::Finder do
           }
         )
 
-        u = User.create!(email: "x@x.x")
-        p = Profile.create!(user: u, updated_at: now)
-        s = Subscription.create!(users_profile_id: p.id, updated_at: now)
+        user = User.create!(email: "x@x.x")
+        profile = Profile.create!(user: user, updated_at: now)
+        subscription = Subscription.create!(
+          users_profile_id: profile.id,
+          updated_at: now
+        )
 
-        create_sync!(u, crm: :hubspot, last_synced_at: now + 1)
-        rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
-        expect(rel.pluck(:id)).not_to include(u.id)
+        create_sync!(user, crm: :hubspot, last_synced_at: now + 1)
+        expect(user_ids_for(:hubspot)).not_to include(user.id)
 
-        s.update!(updated_at: now + 20)
-        rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
-        expect(rel.pluck(:id)).to include(u.id)
+        subscription.update!(updated_at: now + 20)
+        expect(user_ids_for(:hubspot)).to include(user.id)
       end
     end
   end
 
-  # --------- owner belongs_to polymorphic (avatarable) ----------
+  # --------------- Owner side belongs_to polymorphic (avatarable) -----------
 
   describe "owner belongs_to polymorphic dependency" do
-    it "uses concrete target updated_at when avatarable is set" do
+    it "ignores owner-side polymorphic belongs_to (falls back to epoch)" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [:avatarable]
           }
         }
       )
-      u = User.create!(email: "p@x.x")
-      p = Photo.create!(updated_at: now)
-      u.avatarable = p
-      u.updated_at = now
-      u.save!
 
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 1)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).not_to include(u.id)
+      user = User.create!(email: "p@x.x")
+      photo = Photo.create!(updated_at: now)
+      user.avatarable = photo
+      user.updated_at = now
+      user.save!
 
-      p.update!(updated_at: now + 20)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).to include(u.id)
+      # Since owner-side polymorphic belongs_to is ignored (epoch),
+      # updating the target should NOT make the owner stale.
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 1)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+
+      photo.update!(updated_at: now + 20)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
     end
 
     it "returns epoch when no concrete types exist (parts empty)" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [:avatarable]
           }
         }
       )
-      u = User.create!(email: "q@x.x")
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 10)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).not_to include(u.id)
+      user = User.create!(email: "q@x.x")
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
     end
   end
 
-  # ------------- HABTM -------------
+  # -------------------------------- HABTM -----------------------------------
 
   describe "HABTM dependency" do
-    it "marque stale quand un tag devient plus récent que le last_sync" do
+    it "marks stale when a tag becomes newer than last_sync" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [:tags]
           }
         }
       )
-      u = User.create!(email: "habtm@x.x", updated_at: now)
-      t = Tag.create!(name: "x", updated_at: now)
-      u.tags << t
+      user = User.create!(email: "habtm@x.x", updated_at: now)
+      tag = Tag.create!(name: "x", updated_at: now)
+      user.tags << tag
 
-      # sync frais -> pas stale
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 10)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).not_to include(u.id)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
 
-      # un tag devient plus récent -> stale
-      t.update!(updated_at: now + 30)
-      expect(described_class.call(crm_name: :hubspot)[User][:hubspot]
-        .pluck(:id)).to include(u.id)
+      tag.update!(updated_at: now + 30)
+      expect(user_ids_for(:hubspot)).to include(user.id)
     end
   end
 
-  # --------------- G. Timestamp edge cases ----------------
+  # -------------------------- G. Timestamp edge cases -----------------------
 
   describe "timestamp edge cases" do
     it "NULL updated_at are treated as epoch (no crash)" do
-      u = User.create!(email: "u@x.x")
-      n = u.notes.create!(body: "n")
-      Note.where(id: n.id).update_all(updated_at: nil)
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 10)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).not_to include(u.id)
+      user = User.create!(email: "u@x.x")
+      note = user.notes.create!(body: "n")
+      Note.where(id: note.id).update_all(updated_at: nil)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
     end
 
     it "children NULL updated_at does not mark stale unless owner newer" do
-      u = User.create!(email: "u@x.x", updated_at: now)
-      n = u.notes.create!(body: "n")
-      Note.where(id: n.id).update_all(updated_at: nil)
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 5)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).not_to include(u.id)
+      user = User.create!(email: "u@x.x", updated_at: now)
+      note = user.notes.create!(body: "n")
+      Note.where(id: note.id).update_all(updated_at: nil)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 5)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
     end
   end
 
-  # ------------- Adapter portability (integration-level) -------------
+  # ---------------- Adapter portability (integration-level) -----------------
 
   describe "adapter portability (integration)" do
-    it "utilise GREATEST sur Postgres et MAX sur SQLite quand plusieurs deps" do
+    it "uses GREATEST on Postgres and MAX on SQLite with multiple deps" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [:notes, :profile]
           }
         }
       )
-      rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      sql = rel.to_sql
-      adapter = ActiveRecord::Base.connection.adapter_name.to_s.downcase
-      if adapter.include?("postgres")
-        expect(sql).to match(/GREATEST\(/i)
+      relation = described_class.call(crm_name: :hubspot)[User][:hubspot]
+      sql_query = relation.to_sql
+      adapter_name = ActiveRecord::Base.connection.adapter_name.to_s.downcase
+      if adapter_name.include?("postgres")
+        expect(sql_query).to match(/GREATEST\(/i)
       else
-        expect(sql).to match(/MAX\(/i)
+        expect(sql_query).to match(/MAX\(/i)
       end
     end
 
-    it "génère un SQL exécutable (quoting correct) sur le SGBD courant" do
-      rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect { rel.to_a }.not_to raise_error
+    it "generates executable SQL (proper quoting) on current DB" do
+      relation = described_class.call(crm_name: :hubspot)[User][:hubspot]
+      expect { relation.to_a }.not_to raise_error
     end
   end
 
-  # ----------- I. CRM-specific dependencies isolation -----------
+  # -------------------- I. CRM-specific dependencies isolation --------------
 
   describe "CRM-specific dependencies isolation" do
     it "changing a dep for CRM A does not mark CRM B stale" do
-      u = User.create!(email: "a@x.x")
-      c = Company.create!(name: "ACME")
-      u.update!(company: c)
-      create_sync!(u, crm: :hubspot, last_synced_at: now)
-      create_sync!(u, crm: :salesforce, last_synced_at: now)
-      u.notes.create!(body: "x", updated_at: now + 30)
-      res = described_class.call
-      expect(res[User][:hubspot].pluck(:id)).to include(u.id)
-      expect(res[User][:salesforce].pluck(:id)).not_to include(u.id)
+      user = User.create!(email: "a@x.x")
+      company = Company.create!(name: "ACME")
+      user.update!(company: company)
+      create_sync!(user, crm: :hubspot, last_synced_at: now)
+      create_sync!(user, crm: :salesforce, last_synced_at: now)
+      user.notes.create!(body: "x", updated_at: now + 30)
+      results = described_class.call
+      expect(results[User][:hubspot].pluck(:id)).to include(user.id)
+      expect(results[User][:salesforce].pluck(:id)).not_to include(user.id)
     end
 
     it "changing a dep for CRM B marks stale only for CRM B" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [:notes]
           },
           salesforce: {
-            adapter: Etlify::Adapters::NullAdapter,
+            adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "Id",
             crm_object_type: "Lead",
             dependencies: [:company]
           }
         }
       )
-      u = User.create!(email: "b@x.x")
-      c = Company.create!(name: "ACME")
-      u.update!(company: c)
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 30)
-      create_sync!(u, crm: :salesforce, last_synced_at: now)
-      c.update!(updated_at: now + 60)
-      res = described_class.call
-      expect(res[User][:salesforce].pluck(:id)).to include(u.id)
-      expect(res[User][:hubspot].pluck(:id)).not_to include(u.id)
+      user = User.create!(email: "b@x.x")
+      company = Company.create!(name: "ACME")
+      user.update!(company: company)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 30)
+      create_sync!(user, crm: :salesforce, last_synced_at: now)
+      company.update!(updated_at: now + 60)
+      results = described_class.call
+      expect(results[User][:salesforce].pluck(:id)).to include(user.id)
+      expect(results[User][:hubspot].pluck(:id)).not_to include(user.id)
     end
   end
 
-  # ------------- J. Empty results / absent CRM ----------------
+  # --------------------------- J. Empty / absent CRM ------------------------
 
   describe "empty and absent CRM cases" do
     it "omits models not configured for targeted crm_name" do
       allow(User).to receive(:etlify_crms).and_return(
         { hubspot: User.etlify_crms[:hubspot] }
       )
-      res = described_class.call(crm_name: :salesforce)
-      expect(res).to eq({})
+      results = described_class.call(crm_name: :salesforce)
+      expect(results).to eq({})
     end
 
     it "returns {} when no model qualifies" do
@@ -680,22 +665,24 @@ RSpec.describe Etlify::StaleRecords::Finder do
         def self.etlify_crms = {}
       end
       Object.const_set("NopeModel", klass)
-      res = described_class.call(models: [NopeModel])
-      expect(res).to eq({})
+      results = described_class.call(models: [NopeModel])
+      expect(results).to eq({})
     ensure
-      Object.send(:remove_const, "NopeModel") if Object.const_defined?("NopeModel")
+      if Object.const_defined?("NopeModel")
+        Object.send(:remove_const, "NopeModel")
+      end
     end
 
-    it "relation exists but may be empty when nothing is stale" do
-      u = User.create!(email: "ok@x.x", updated_at: now - 1)
-      create_sync!(u, crm: :hubspot, last_synced_at: now)
-      rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(rel).to be_a(ActiveRecord::Relation)
-      expect(rel.pluck(:id)).to be_empty
+    it "relation exists but can be empty when nothing is stale" do
+      user = User.create!(email: "ok@x.x", updated_at: now - 1)
+      create_sync!(user, crm: :hubspot, last_synced_at: now)
+      relation = described_class.call(crm_name: :hubspot)[User][:hubspot]
+      expect(relation).to be_a(ActiveRecord::Relation)
+      expect(relation.pluck(:id)).to be_empty
     end
   end
 
-  # ----------------- Robustness -----------------
+  # ------------------------------ Robustness --------------------------------
 
   describe "robustness" do
     it "ignores unknown dependency names" do
@@ -706,22 +693,58 @@ RSpec.describe Etlify::StaleRecords::Finder do
           )
         }
       )
-      u = User.create!(email: "u@x.x", updated_at: now)
-      create_sync!(u, crm: :hubspot, last_synced_at: now + 10)
-      res = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect(res.pluck(:id)).not_to include(u.id)
+      user = User.create!(email: "u@x.x", updated_at: now)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
     end
 
-    it "uses a single LEFT OUTER JOIN per CRM and selects id only" do
-      rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      sql = rel.to_sql
-      expect(sql.scan(/LEFT OUTER JOIN/i).size).to eq(1)
-      expect(sql).to include('SELECT "users"."id"')
+    it "uses a single LEFT OUTER JOIN and exposes a single id column" do
+      relation = described_class.call(crm_name: :hubspot)[User][:hubspot]
+      sql_query = relation.to_sql
+
+      # Inner subquery has exactly one LEFT OUTER JOIN on crm_synchronisations
+      expect(sql_query.scan(/LEFT OUTER JOIN/i).size).to eq(1)
+
+      # Outer select exposes a single 'id' column from the subquery alias
+      expect(relation.arel.projections.size).to eq(1)
+      expect(sql_query).to match(/SELECT\s+["`]?(id)["`]?/i)
     end
 
     it "quotes names safely to avoid crashes with reserved words" do
-      rel = described_class.call(crm_name: :hubspot)[User][:hubspot]
-      expect { rel.to_a }.not_to raise_error
+      relation = described_class.call(crm_name: :hubspot)[User][:hubspot]
+      expect { relation.to_a }.not_to raise_error
+    end
+
+    it "orders ids ascending for stable batching" do
+      first_user = User.create!(email: "a@x.x")
+      second_user = User.create!(email: "b@x.x")
+      user_ids = described_class.call(crm_name: :hubspot)[User][:hubspot]
+                                .pluck(:id)
+      expect(user_ids).to eq(user_ids.sort)
+      expect(user_ids).to include(first_user.id, second_user.id)
+    end
+
+    it "skips models that define etlify_crms but have no table" do
+      klass = Class.new(ApplicationRecord) do
+        self.table_name = "nope_table"
+        def self.etlify_crms
+          {
+            hubspot: {
+              adapter: Etlify::Adapters::NullAdapter.new,
+              id_property: "id",
+              crm_object_type: "contacts",
+              dependencies: []
+            }
+          }
+        end
+      end
+      Object.const_set("PhantomModel", klass)
+      results = described_class.call(models: [PhantomModel], crm_name: :hubspot)
+      expect(results).to eq({})
+    ensure
+      if Object.const_defined?("PhantomModel")
+        Object.send(:remove_const, "PhantomModel")
+      end
     end
   end
 end

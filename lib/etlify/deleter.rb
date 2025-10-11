@@ -26,8 +26,7 @@ module Etlify
 
       @adapter.delete!(
         crm_id: line.crm_id,
-        object_type: conf[:crm_object_type],
-        id_property: conf[:id_property]
+        object_type: conf[:crm_object_type]
       )
       :deleted
     rescue => e

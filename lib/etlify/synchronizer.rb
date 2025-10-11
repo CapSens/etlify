@@ -6,9 +6,10 @@ module Etlify
       :crm_name,
       :resource
     )
-    # main entry point (CRM-aware)
+
+    # Main entry point (CRM-aware).
     # @param resource [ActiveRecord::Base]
-    # @param crm [Symbol,String]
+    # @param crm_name [Symbol,String]
     def self.call(resource, crm_name:)
       new(resource, crm_name: crm_name).call
     end
@@ -16,15 +17,28 @@ module Etlify
     def initialize(resource, crm_name:)
       @resource = resource
       @crm_name = crm_name.to_sym
-      @conf    = resource.class.etlify_crms.fetch(@crm_name)
-      @adapter = @conf[:adapter]
+      @conf     = resource.class.etlify_crms.fetch(@crm_name)
+      @adapter  = @conf[:adapter]
 
-      if @adapter.is_a?(Class) || !@adapter.respond_to?(:upsert!)
+      unless @adapter.is_a?(Object) && @adapter.respond_to?(:upsert!)
         raise ArgumentError, "Adapter must be an instance responding to upsert!"
       end
     end
 
     def call
+      # Honor sync guard first. If guard returns false, skip the sync.
+      guard = conf[:guard]
+      unless guard.nil? || guard.call(resource)
+        # Optionally touch last_synced_at to avoid reprocessing loops.
+        # Swallow errors here to keep behavior non-fatal.
+        begin
+          sync_line.update!(last_synced_at: Time.current, last_error: nil)
+        rescue
+          # no-op
+        end
+        return :skipped
+      end
+
       resource.with_lock do
         if sync_line.stale?(digest)
           crm_id = adapter.upsert!(
@@ -40,7 +54,6 @@ module Etlify
             last_synced_at: Time.current,
             last_error: nil
           )
-
           :synced
         else
           sync_line.update!(last_synced_at: Time.current)
@@ -49,13 +62,12 @@ module Etlify
       end
     rescue => e
       sync_line.update!(last_error: e.message)
-
       :error
     end
 
     private
 
-    # Compute once to keep idempotency inside the lock
+    # Compute once to keep idempotency inside the lock.
     def digest
       @digest ||= Etlify.config.digest_strategy.call(payload)
     end
@@ -67,9 +79,7 @@ module Etlify
     # Select or build the per-CRM sync line.
     # If you still have has_one, this keeps working but won't handle multi-CRM.
     def sync_line
-      resource.crm_synchronisations.find_or_initialize_by(
-        crm_name: crm_name
-      )
+      resource.crm_synchronisations.find_or_initialize_by(crm_name: crm_name)
     end
   end
 end
