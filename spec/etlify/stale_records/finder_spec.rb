@@ -864,9 +864,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
       # Outer select exposes a single 'id' column from the subquery alias
       expect(relation.arel.projections.size).to eq(1)
-      expect(sql_query).to match(
-        /SELECT\s+["`]?etlify_stale_ids["`]?\.\s*["`]?id["`]?\s+AS\s+["`]?id["`]?/i
-      )
+      expect(sql_query).to match(/SELECT\s+"users"\."id"/i)
     end
 
     it "quotes names safely to avoid crashes with reserved words" do

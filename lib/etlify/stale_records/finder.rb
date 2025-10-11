@@ -73,8 +73,8 @@ module Etlify
         #   - WHERE (crm_sync.id IS NULL OR crm_sync.last_synced_at < threshold)
         #   - threshold = GREATEST(owner.updated_at, deps.updated_at..., epoch)
         #   - SELECT "<owners>.<pk> AS id"
-        #   - ORDER BY id
-        #   - Wrap in a subquery exposing a single "id" column
+        #   - Wrap in a subquery aliased as "etlify_stale_ids"
+        #   - Outer SELECT projects: etlify_stale_ids.id AS id, ordered ASC
         def stale_relation_for(model, crm_name:)
           conn       = model.connection
           owner_tbl  = model.table_name
@@ -90,42 +90,37 @@ module Etlify
             crm_arel, owner_arel.create_on(join_on), Arel::Nodes::OuterJoin
           )
 
-          threshold_expr =
-            latest_timestamp_arel(model, crm_name: crm_name, conn: conn)
-
+          threshold_expr = latest_timestamp_arel(model, crm_name: crm_name, conn: conn)
           last_synced_expr =
             Arel::Nodes::NamedFunction.new(
               "COALESCE", [crm_arel[:last_synced_at], epoch_arel(conn)]
             )
-
-          where_pred =
-            crm_arel[:id].eq(nil).or(last_synced_expr.lt(threshold_expr))
+          where_pred = crm_arel[:id].eq(nil).or(last_synced_expr.lt(threshold_expr))
 
           qualified_pk_sql =
             "#{conn.quote_table_name(owner_tbl)}." \
             "#{conn.quote_column_name(model.primary_key)}"
 
-          base_rel =
+          inner_rel =
             model.unscoped
-                 .from(owner_arel)
-                 .joins(join_sql)
-                 .where(where_pred)
-                 .select(Arel.sql("#{qualified_pk_sql} AS id"))
-                 .reorder(Arel.sql("#{qualified_pk_sql} ASC"))
+                .from(owner_arel)
+                .joins(join_sql)
+                .where(where_pred)
+                .select(Arel.sql("#{qualified_pk_sql} AS id"))
+                .reorder(Arel.sql("#{qualified_pk_sql} ASC"))
 
-          sub_sql  = base_rel.to_sql
-          sub_from = Arel.sql("(#{sub_sql}) AS etlify_stale_ids")
+          sub_sql   = inner_rel.to_sql
 
-          # Build an Arel table for the subquery alias to avoid AR re-qualifying
-          aliased  = Arel::Table.new(:etlify_stale_ids)
+          # Key point: alias the subquery as the real table name so AR's pluck(:id)
+          # which emits `"#{owner_tbl}"."id"` remains valid.
+          tbl_alias = conn.quote_table_name(owner_tbl)
+          sub_from  = Arel.sql("(#{sub_sql}) AS #{tbl_alias}")
 
-          model
-            .unscoped
-            .from(sub_from)
-            # Select the id from the subquery alias explicitly
-            .select(aliased[:id].as("id"))
-            # Order by the same alias-qualified column
-            .reorder(aliased[:id].asc)
+          # Keep a single id column and stable order.
+          model.unscoped
+              .from(sub_from)
+              .select("id")
+              .reorder("id ASC")
         end
 
         # ---------- Threshold (owner + dependencies) ----------
