@@ -1,5 +1,7 @@
 # UNRELEASED
 
+- fix: Avoid aliases in `Etlify::StaleRecords::Finder` to make it possible to use .pluck(:id) on collection
+
 # V0.9.0
 
 This version contains Breaking Changes ⚠️
