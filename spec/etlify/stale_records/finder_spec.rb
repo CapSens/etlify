@@ -40,6 +40,12 @@ RSpec.describe Etlify::StaleRecords::Finder do
         t.timestamps null: true
       end
 
+      create_table :follows, force: true do |t|
+        t.integer :follower_id, null: false
+        t.integer :followee_id, null: false
+        t.timestamps null: true
+      end
+
       unless ActiveRecord::Base.connection
                  .column_exists?(:users, :avatarable_type)
         add_column :users, :avatarable_type, :string
@@ -138,6 +144,11 @@ RSpec.describe Etlify::StaleRecords::Finder do
                        optional: true
     end
 
+    define_model_const("Follow") do |klass|
+      klass.belongs_to :follower, class_name: "User", optional: false
+      klass.belongs_to :followee, class_name: "User", optional: false
+    end
+
     Profile.class_eval do
       has_many :subscriptions,
                class_name: "Subscription",
@@ -158,6 +169,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
       has_many :linkages, as: :owner, dependent: :destroy
       has_many :poly_projects, through: :linkages, source: :project
       has_many :subscriptions, through: :profile
+      has_many :follows, class_name: "Follow",
+                       foreign_key: "follower_id",
+                       dependent: :destroy
+      has_many :followees, through: :follows, source: :followee
     end
   end
 
@@ -554,6 +569,148 @@ RSpec.describe Etlify::StaleRecords::Finder do
     end
   end
 
+  # ---------------- Self-join has_many :through aliasing -------------------
+
+  describe "self-join has_many :through aliasing" do
+    it "aliases source table to avoid PG::DuplicateAlias on Postgres" do
+      # Configure Finder to scan the self-join dependency
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            # The dependency below triggers a users->users self-join
+            dependencies: [:followees]
+          }
+        }
+      )
+
+      # Minimal data to build an executable relation
+      follower = User.create!(email: "f@x.x", updated_at: now)
+      followee = User.create!(email: "g@x.x", updated_at: now)
+      Follow.create!(
+        follower_id: follower.id,
+        followee_id: followee.id,
+        updated_at: now
+      )
+      create_sync!(follower, crm: :hubspot, last_synced_at: now + 1)
+
+      relation = described_class.call(crm_name: :hubspot)[User][:hubspot]
+      sql = relation.to_sql
+
+      # The SQL must alias the source users table (e.g. "users" AS "users_src")
+      expect(sql).to match(/INNER\s+JOIN\s+"users"\s+AS\s+"users_src"/i)
+
+      # And it must be executable (no PG::DuplicateAlias at runtime)
+      expect { relation.to_a }.not_to raise_error
+    end
+  end
+
+  # ---------------- Nested has_many :through (profile -> join -> questionnaire) --
+
+  describe "nested has_many :through (Profile -> Join -> SuitabilityQuestionnaire)" do
+    before(:context) do
+      conn = ActiveRecord::Base.connection
+
+      unless conn.data_source_exists?("users_profiles_suitability_questionnaires")
+        ActiveRecord::Schema.define do
+          create_table :users_profiles_suitability_questionnaires, force: true do |t|
+            t.integer :users_profile_id, null: false
+            t.integer :suitability_questionnaire_id, null: false
+            t.timestamps null: true
+          end
+          add_index :users_profiles_suitability_questionnaires,
+                    [:users_profile_id, :suitability_questionnaire_id],
+                    unique: true,
+                    name: "idx_upsq_on_profile_and_questionnaire"
+        end
+      end
+
+      unless conn.data_source_exists?("capsens_suitability_questionnaire_questionnaires")
+        ActiveRecord::Schema.define do
+          create_table :capsens_suitability_questionnaire_questionnaires, force: true do |t|
+            t.timestamps null: true
+          end
+        end
+      end
+
+      # === Model stubs (table names alignés sur la prod) ======================
+
+      Object.send(:remove_const, "SuitabilityQuestionnaire") \
+        if Object.const_defined?("SuitabilityQuestionnaire")
+      class SuitabilityQuestionnaire < ApplicationRecord
+        self.table_name = "capsens_suitability_questionnaire_questionnaires"
+      end
+
+      Object.send(:remove_const, "ProfilesSuitabilityQuestionnaire") \
+        if Object.const_defined?("ProfilesSuitabilityQuestionnaire")
+      class ProfilesSuitabilityQuestionnaire < ApplicationRecord
+        self.table_name = "users_profiles_suitability_questionnaires"
+
+        belongs_to :profile,
+                  class_name: "Profile",
+                  foreign_key: "users_profile_id",
+                  optional: false
+        belongs_to :suitability_questionnaire,
+                  class_name: "SuitabilityQuestionnaire",
+                  optional: false
+      end
+
+      # === Missing associations on Profile / User =========================
+
+      Profile.class_eval do
+        has_many :profiles_suitability_questionnaires,
+                class_name: "ProfilesSuitabilityQuestionnaire",
+                foreign_key: "users_profile_id",
+                dependent: :destroy
+
+        has_many :suitability_questionnaires,
+                through: :profiles_suitability_questionnaires,
+                source: :suitability_questionnaire
+      end
+
+      User.class_eval do
+        has_many :suitability_questionnaires,
+                through: :profile,
+                source: :suitability_questionnaires
+      end
+    end
+
+    it "marks user stale when a nested-through suitability questionnaire updates" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            dependencies: [:suitability_questionnaires]
+          }
+        }
+      )
+
+      t0 = now
+      user = User.create!(email: "nested@x.x", updated_at: t0)
+      profile = Profile.create!(user: user, updated_at: t0)
+
+      questionnaire = SuitabilityQuestionnaire.create!(created_at: t0, updated_at: t0)
+      ProfilesSuitabilityQuestionnaire.create!(
+        users_profile_id: profile.id,
+        suitability_questionnaire_id: questionnaire.id,
+        created_at: t0,
+        updated_at: t0
+      )
+
+      # Fresh sync at t0 + 1 → not stale
+      create_sync!(user, crm: :hubspot, last_synced_at: t0 + 1)
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+
+      # Update questionnaire at t0 + 20 → user becomes stale
+      questionnaire.update!(updated_at: t0 + 20)
+      expect(user_ids_for(:hubspot)).to include(user.id)
+    end
+  end
+
   # -------------------------- G. Timestamp edge cases -----------------------
 
   describe "timestamp edge cases" do
@@ -707,7 +864,9 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
       # Outer select exposes a single 'id' column from the subquery alias
       expect(relation.arel.projections.size).to eq(1)
-      expect(sql_query).to match(/SELECT\s+["`]?(id)["`]?/i)
+      expect(sql_query).to match(
+        /SELECT\s+["`]?etlify_stale_ids["`]?\.\s*["`]?id["`]?\s+AS\s+["`]?id["`]?/i
+      )
     end
 
     it "quotes names safely to avoid crashes with reserved words" do

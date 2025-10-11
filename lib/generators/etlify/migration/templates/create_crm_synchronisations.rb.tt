@@ -7,7 +7,7 @@ class <%= file_name.camelize %> < ActiveRecord::Migration[<%= ActiveRecord::VERS
       t.string   :last_digest
       t.datetime :last_synced_at
       t.string   :last_error
-      t.string   :crm
+      t.string   :crm_name
 
       t.timestamps
     end

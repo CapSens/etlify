@@ -116,10 +116,16 @@ module Etlify
           sub_sql  = base_rel.to_sql
           sub_from = Arel.sql("(#{sub_sql}) AS etlify_stale_ids")
 
-          model.unscoped
-               .from(sub_from)
-               .select(Arel.sql("id"))
-               .reorder(Arel.sql("id ASC"))
+          # Build an Arel table for the subquery alias to avoid AR re-qualifying
+          aliased  = Arel::Table.new(:etlify_stale_ids)
+
+          model
+            .unscoped
+            .from(sub_from)
+            # Select the id from the subquery alias explicitly
+            .select(aliased[:id].as("id"))
+            # Order by the same alias-qualified column
+            .reorder(aliased[:id].asc)
         end
 
         # ---------- Threshold (owner + dependencies) ----------
@@ -286,69 +292,122 @@ module Etlify
         end
 
         # -------------------------- has_* :through -------------------------
-
         # MAX(timestamp) over the source table joined via the through table.
-        # Tries to respect custom keys when present.
+        # Handles nested :through and self-joins by aliasing source/join tables.
         def through_dependency_timestamp_sql(model, reflection, conn)
           through    = reflection.through_reflection
           source     = reflection.source_reflection
-
-          ts_col = dep_timestamp_column(reflection.klass)
+          ts_col     = dep_timestamp_column(reflection.klass)
           return epoch_literal(conn) unless ts_col
 
-          through_tbl = through.klass.table_name
-          through_pk  =
-            through.options[:primary_key] || through.klass.primary_key
-
-          source_tbl  = reflection.klass.table_name
-          source_pk   =
-            source.options[:primary_key] || reflection.klass.primary_key
-
           owner_tbl   = model.table_name
+          through_tbl = through.klass.table_name
+          source_tbl  = reflection.klass.table_name
 
-          qt = ->(t) { conn.quote_table_name(t) }
-          qc = ->(c) { conn.quote_column_name(c) }
+          # Always alias the source table to avoid duplicate-name errors when it is
+          # the same class/table as the owner (self-joins over :through).
+          src_alias   = "#{source_tbl}_src"
 
-          # Owner -> through join predicate
+          # Correlated predicate owner -> through (ex: users_profiles.user_id = users.id)
           owner_fk = through.foreign_key
-          preds = []
-          preds << "#{qt.call(through_tbl)}.#{qc.call(owner_fk)} = " \
-                   "#{qt.call(owner_tbl)}.#{qc.call(model.primary_key)}"
-
-          # Polymorphic through: add type predicate if :as is set on through
+          owner_to_through_preds = [
+            "#{qt(conn, through_tbl)}.#{qc(conn, owner_fk)} = " \
+            "#{qt(conn, owner_tbl)}.#{qc(conn, model.primary_key)}",
+          ]
           if (as = through.options[:as])
-            preds << "#{qt.call(through_tbl)}.#{qc.call("#{as}_type")} = " \
-                     "#{conn.quote(model.name)}"
+            owner_to_through_preds << "#{qt(conn, through_tbl)}." \
+                                      "#{qc(conn, "#{as}_type")} = #{conn.quote(model.name)}"
           end
 
-          # through <-> source join predicate
-          join_on =
+          # Nested through on the source side
+          nested_through = source.try(:through_reflection)
+          if nested_through
+            join_tbl       = nested_through.klass.table_name
+            join_pk_to_thr = nested_through.foreign_key
+
+            # Find the real FK from the join model to target klass, or fallback.
+            join_fk_to_src =
+              fk_from_join_to_target_klass(nested_through.klass, reflection.klass) ||
+              "#{source.name.to_s.singularize}_id"
+
+            <<-SQL.squish
+              COALESCE((
+                SELECT MAX(#{q_alias(conn, src_alias)}.#{qc(conn, ts_col)})
+                FROM #{qt(conn, through_tbl)}
+                INNER JOIN #{qt(conn, join_tbl)}
+                  ON #{qt(conn, join_tbl)}.#{qc(conn, join_pk_to_thr)} =
+                    #{qt(conn, through_tbl)}.#{qc(conn, through.klass.primary_key)}
+                INNER JOIN #{aliased_table(conn, source_tbl, src_alias)}
+                  ON #{q_alias(conn, src_alias)}.
+                      #{qc(conn, reflection.klass.primary_key)} =
+                    #{qt(conn, join_tbl)}.#{qc(conn, join_fk_to_src)}
+                WHERE #{owner_to_through_preds.map { |p| "(#{p})" }.join(" AND ")}
+              ), #{epoch_literal(conn)})
+            SQL
+          else
+            # Simple (non-nested) :through
+            through_pk =
+              through.options[:primary_key] || through.klass.primary_key
+
             if source.macro == :belongs_to
+              src_pk = source.options[:primary_key] || reflection.klass.primary_key
               src_fk = source.foreign_key
-              "#{qt.call(source_tbl)}.#{qc.call(source_pk)} = " \
-              "#{qt.call(through_tbl)}.#{qc.call(src_fk)}"
+              join_on =
+                "#{q_alias(conn, src_alias)}.#{qc(conn, src_pk)} = " \
+                "#{qt(conn, through_tbl)}.#{qc(conn, src_fk)}"
             else
               src_fk =
                 source.foreign_key ||
                 reflection.options[:foreign_key] ||
-                reflection.klass.reflections
-                  .dig(source.name.to_s)&.foreign_key
-              src_fk ||= source.foreign_key
-              "#{qt.call(source_tbl)}.#{qc.call(src_fk)} = " \
-              "#{qt.call(through_tbl)}.#{qc.call(through_pk)}"
+                reflection
+                  .klass
+                  .reflections
+                  .dig(source.name.to_s)&.foreign_key ||
+                source.foreign_key
+
+              join_on =
+                "#{q_alias(conn, src_alias)}.#{qc(conn, src_fk)} = " \
+                "#{qt(conn, through_tbl)}.#{qc(conn, through_pk)}"
             end
 
-          <<-SQL.squish
-            COALESCE((
-              SELECT MAX(#{qt.call(source_tbl)}.#{qc.call(ts_col)})
-              FROM #{qt.call(through_tbl)}
-              INNER JOIN #{qt.call(source_tbl)} ON #{join_on}
-              WHERE #{preds.map { |p| "(#{p})" }.join(" AND ")}
-            ), #{epoch_literal(conn)})
-          SQL
+            <<-SQL.squish
+              COALESCE((
+                SELECT MAX(#{q_alias(conn, src_alias)}.#{qc(conn, ts_col)})
+                FROM #{qt(conn, through_tbl)}
+                INNER JOIN #{aliased_table(conn, source_tbl, src_alias)}
+                  ON #{join_on}
+                WHERE #{owner_to_through_preds.map { |p| "(#{p})" }.join(" AND ")}
+              ), #{epoch_literal(conn)})
+            SQL
+          end
         end
 
         # ----------------------------- Helpers -----------------------------
+        def qt(conn, table_name)
+          conn.quote_table_name(table_name)
+        end
+
+        def qc(conn, col_name)
+          conn.quote_column_name(col_name)
+        end
+
+        def q_alias(conn, alias_name)
+          # Quote SQL identifier used as an alias
+          conn.quote_table_name(alias_name)
+        end
+
+        def aliased_table(conn, table_name, alias_name)
+          "#{qt(conn, table_name)} AS #{q_alias(conn, alias_name)}"
+        end
+
+        def fk_from_join_to_target_klass(join_klass, target_klass)
+          # Cherche un belongs_to sur le join pointant vers la classe cible,
+          # retourne sa foreign_key s’il existe (ex: :suitability_questionnaire_id)
+          refl = join_klass.reflections.values.find do |r|
+            r.macro == :belongs_to && r.klass == target_klass
+          end
+          refl&.foreign_key
+        end
 
         # Pick a timestamp column for a given ActiveRecord class.
         # Prefer "updated_at", fallback to "created_at", else nil.
