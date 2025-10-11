@@ -33,8 +33,14 @@ module Etlify
 
   # HTTP errors
   class ApiError < Error; end
-  class Unauthorized < ApiError; end         # 401/403
-  class NotFound < ApiError; end             # 404
-  class RateLimited < ApiError; end          # 429
-  class ValidationFailed < ApiError; end     # 409/422
+  class Unauthorized < ApiError; end            # 401/403
+  class NotFound < ApiError; end                # 404
+  class RateLimited < ApiError; end             # 429
+  class ValidationFailed < ApiError; end        # 409/422
+
+  # Internal errors
+  class SyncError < StandardError; end
+
+  # Configuration error (update)
+  class MissingColumnError < StandardError; end
 end
