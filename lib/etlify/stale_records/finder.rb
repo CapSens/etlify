@@ -286,6 +286,62 @@ module Etlify
           SQL
         end
 
+        # Simplified handler for complex has_many :through :through cases
+        # Uses ActiveRecord's own join building to handle nested :through associations
+        def through_via_activerecord_sql(model, reflection, ts_col, conn)
+          owner_tbl = model.table_name
+          target_tbl = reflection.klass.table_name
+
+          # Build a sample query using ActiveRecord to get the join structure
+          # We'll use to_sql to get the full SQL with joins
+          sample_relation = model.unscoped.joins(reflection.name).where("1=0")
+          full_sql = sample_relation.to_sql
+
+          # Extract the JOIN clauses from the full SQL
+          # Pattern: FROM "table" INNER JOIN ... WHERE
+          if full_sql =~ /FROM "#{owner_tbl}"(.+?)WHERE/m
+            joins_sql = $1.strip
+          else
+            # Fallback to epoch if we can't parse
+            return epoch_literal(conn)
+          end
+
+          # Extract the target table alias from the joins
+          # Look for the last occurrence of the target table (it's the final one in the chain)
+          target_alias = nil
+          joins_sql.scan(/"#{Regexp.escape(target_tbl)}"(?:\s+(?:AS\s+)?"([^"]+)")?/) do |match|
+            target_alias = match[0] if match[0]
+          end
+          target_alias ||= target_tbl
+
+          # Create an alias for the owner table in the subquery to avoid conflicts
+          # The outer query references "users"."id", so we need to use a different reference
+          owner_alias = "#{owner_tbl}_outer"
+          owner_table_quoted = conn.quote_table_name(owner_tbl)
+          owner_alias_quoted = conn.quote_table_name(owner_alias)
+          target_table_quoted = conn.quote_table_name(target_alias)
+
+          # Replace the first occurrence of the owner table in FROM with an aliased version
+          # FROM "users" becomes FROM "users" AS "users_outer"
+          joins_with_alias = joins_sql.sub(
+            /\A(\s*)INNER JOIN "#{Regexp.escape(owner_tbl)}"/,
+            "\\1INNER JOIN #{owner_table_quoted} AS #{owner_alias_quoted}"
+          )
+
+          # Replace all references to the owner table in the joins to use the alias
+          joins_with_alias.gsub!(/"#{Regexp.escape(owner_tbl)}"\./, "#{owner_alias_quoted}.")
+
+          <<-SQL.squish
+            COALESCE((
+              SELECT MAX(#{target_table_quoted}.#{conn.quote_column_name(ts_col)})
+              FROM #{owner_table_quoted} AS #{owner_alias_quoted}
+              #{joins_with_alias}
+              WHERE #{owner_alias_quoted}.#{conn.quote_column_name(model.primary_key)} =
+                    #{owner_table_quoted}.#{conn.quote_column_name(model.primary_key)}
+            ), #{epoch_literal(conn)})
+          SQL
+        end
+
         # -------------------------- has_* :through -------------------------
         # MAX(timestamp) over the source table joined via the through table.
         # Handles nested :through and self-joins by aliasing source/join tables.
@@ -294,6 +350,12 @@ module Etlify
           source     = reflection.source_reflection
           ts_col     = dep_timestamp_column(reflection.klass)
           return epoch_literal(conn) unless ts_col
+
+          # If the 'through' is itself a has_many :through, use ActiveRecord
+          # to build the join SQL automatically
+          if through.through_reflection
+            return through_via_activerecord_sql(model, reflection, ts_col, conn)
+          end
 
           owner_tbl   = model.table_name
           through_tbl = through.klass.table_name
