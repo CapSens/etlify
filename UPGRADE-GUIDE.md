@@ -1,3 +1,11 @@
+# UPGRADING FROM 0.9.1 -> 0.9.2
+
+- Nothing to do (bugfix)
+
+# UPGRADING FROM 0.9.0 -> 0.9.1
+
+- Nothing to do (bugfix)
+
 # UPGRADING FROM 0.8.x -> 0.9.0
 
 ⚠️ **Breaking changes ahead.**

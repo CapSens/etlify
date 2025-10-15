@@ -1,5 +1,7 @@
 # UNRELEASED
 
+# V0.9.1
+
 - fix: Third level depencies errors in `Etlify::StaleRecords::Finder`
 
 # V0.9.1
