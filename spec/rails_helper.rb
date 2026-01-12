@@ -95,12 +95,23 @@ RSpec.configure do |config|
         Etlify::Serializers::UserSerializer.new(self).as_crm_payload
       end
 
+      STALE_SQL = <<-SQL.squish
+        crm_synchronisations.id IS NULL
+        OR crm_synchronisations.crm_name != ?
+        OR crm_synchronisations.last_synced_at < users.updated_at
+      SQL
+
       def self.etlify_crms
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
+            stale_scope: ->(model, crm_name) do
+              model
+                .left_joins(:crm_synchronisations)
+                .where(STALE_SQL, crm_name.to_s)
+            end,
           },
         }
       end

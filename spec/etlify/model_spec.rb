@@ -95,11 +95,12 @@ RSpec.describe Etlify::Model do
       klass = build_including_class
       described_class.define_crm_dsl_on(klass, :hubspot)
 
+      stale_scope_proc = ->(model, _crm) { model.all }
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
         id_property: :external_id,
-        dependencies: %w[company owner],
+        stale_scope: stale_scope_proc,
         sync_if: ->(r) { r.respond_to?(:active?) ? r.active? : true },
         job_class: "OverrideJob"
       )
@@ -109,7 +110,7 @@ RSpec.describe Etlify::Model do
       expect(conf[:guard]).to be_a(Proc)
       expect(conf[:crm_object_type]).to eq(:contact)
       expect(conf[:id_property]).to eq(:external_id)
-      expect(conf[:dependencies]).to eq(%i[company owner])
+      expect(conf[:stale_scope]).to eq(stale_scope_proc)
       expect(conf[:adapter]).to eq(dummy_adapter)
       expect(conf[:job_class]).to eq("OverrideJob")
     end
@@ -121,7 +122,8 @@ RSpec.describe Etlify::Model do
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
-        id_property: :external_id
+        id_property: :external_id,
+        stale_scope: ->(model, _crm) { model.all }
       )
 
       conf = klass.etlify_crms[:hubspot]
@@ -138,7 +140,8 @@ RSpec.describe Etlify::Model do
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
-        id_property: :external_id
+        id_property: :external_id,
+        stale_scope: ->(model, _crm) { model.all }
       )
 
       expect(klass.etlify_crms.keys).to include(:salesforce, :hubspot)
@@ -152,9 +155,23 @@ RSpec.describe Etlify::Model do
         klass.hubspot_etlified_with(
           serializer: dummy_serializer,
           crm_object_type: :contact,
-          id_property: :external_id
+          id_property: :external_id,
+          stale_scope: ->(model, _crm) { model.all }
         )
       end.to raise_error(RuntimeError, "boom")
+    end
+
+    it "raises when stale_scope does not respond to call" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+      expect do
+        klass.hubspot_etlified_with(
+          serializer: dummy_serializer,
+          crm_object_type: :contact,
+          id_property: :external_id,
+          stale_scope: "not_callable"
+        )
+      end.to raise_error(ArgumentError, /stale_scope must respond to #call/)
     end
   end
 

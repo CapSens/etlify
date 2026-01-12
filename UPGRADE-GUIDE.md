@@ -1,3 +1,60 @@
+# UPGRADING FROM 0.9.x -> 0.10.0
+
+⚠️ **Breaking changes ahead.**
+
+## Overview
+
+Etlify 0.10.0 replaces the `dependencies:` option with a required `stale_scope:` parameter.
+This gives you full control over which records are considered stale.
+
+## Migration
+
+Replace `dependencies:` with `stale_scope:` in all your model configurations:
+
+**Before (0.9.x):**
+
+```ruby
+hubspot_etlified_with(
+  serializer: UserSerializer,
+  crm_object_type: "contacts",
+  id_property: :id,
+  dependencies: [:company, :investments]
+)
+```
+
+**After (0.10.0):**
+
+```ruby
+hubspot_etlified_with(
+  serializer: UserSerializer,
+  crm_object_type: "contacts",
+  id_property: :id,
+  stale_scope: Users::EtlifyStaleScopeQuery
+)
+
+# app/queries/users/etlify_stale_scope_query.rb
+module Users
+  class EtlifyStaleScopeQuery
+    STALE_SQL = <<-SQL.squish
+      crm_synchronisations.id IS NULL
+      OR crm_synchronisations.crm_name != ?
+      OR crm_synchronisations.last_synced_at < users.updated_at
+      OR crm_synchronisations.last_synced_at < companies.updated_at
+      OR crm_synchronisations.last_synced_at < investments.updated_at
+    SQL
+
+    def self.call(model, crm_name)
+      model
+        .left_joins(:crm_synchronisations, :company, :investments)
+        .where(STALE_SQL, crm_name.to_s)
+        .distinct
+    end
+  end
+end
+```
+
+---
+
 # UPGRADING FROM 0.9.1 -> 0.9.2
 
 - Nothing to do (bugfix)
@@ -121,7 +178,7 @@ class User < ApplicationRecord
     serializer: Etlify::Serializers::UserSerializer,
     crm_object_type: "contacts",
     id_property: "email",
-    dependencies: [:company],
+    stale_scope: Users::EtlifyStaleScopeQuery,
     sync_if: ->(record) { record.email.present? }
   )
 end

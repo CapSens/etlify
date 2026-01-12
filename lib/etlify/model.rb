@@ -52,10 +52,14 @@ module Etlify
           serializer:,
           crm_object_type:,
           id_property:,
-          dependencies: [],
+          stale_scope:,
           sync_if: ->(_r) { true },
           job_class: nil
         |
+          unless stale_scope.respond_to?(:call)
+            raise ArgumentError, "stale_scope must respond to #call"
+          end
+
           reg = Etlify::CRM.fetch(crm_name)
 
           conf = {
@@ -63,7 +67,7 @@ module Etlify
             guard: sync_if,
             crm_object_type: crm_object_type,
             id_property: id_property,
-            dependencies: Array(dependencies).map(&:to_sym),
+            stale_scope: stale_scope,
             adapter: reg.adapter,
             job_class: job_class || reg.options[:job_class],
           }
