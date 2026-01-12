@@ -114,9 +114,74 @@ class User < ApplicationRecord
     id_property: :id,
     # Only sync when an email exists
     sync_if: ->(user) { user.email.present? },
-    # useful if your object serialization includes dependencies
-    dependencies: [:investments]
+    # Required: defines which records need to be synced
+    stale_scope: Users::EtlifyStaleScopeQuery
   )
+end
+```
+
+### Writing a stale_scope
+
+The `stale_scope` is required and defines which records need to be synced. It must be a Proc or a Query Object responding to `.call(model_class, crm_name)` and returning an `ActiveRecord::Relation`.
+
+```ruby
+# app/queries/users/etlify_stale_scope_query.rb
+module Users
+  class EtlifyStaleScopeQuery
+    STALE_SQL = <<-SQL.squish
+      crm_synchronisations.id IS NULL
+      OR crm_synchronisations.crm_name != ?
+      OR crm_synchronisations.last_synced_at < users.updated_at
+    SQL
+
+    def self.call(model, crm_name)
+      model
+        .left_joins(:crm_synchronisations)
+        .where(STALE_SQL, crm_name.to_s)
+    end
+  end
+end
+```
+
+You can also use an inline Proc:
+
+```ruby
+hubspot_etlified_with(
+  serializer: UserSerializer,
+  crm_object_type: "contacts",
+  id_property: :id,
+  stale_scope: ->(model, crm_name) do
+    model
+      .left_joins(:crm_synchronisations)
+      .where(<<-SQL.squish, crm_name.to_s)
+        crm_synchronisations.id IS NULL
+        OR crm_synchronisations.crm_name != ?
+        OR crm_synchronisations.last_synced_at < users.updated_at
+      SQL
+  end
+)
+```
+
+For models with dependencies (e.g., sync when investments change):
+
+```ruby
+# app/queries/users/etlify_stale_scope_query.rb
+module Users
+  class EtlifyStaleScopeQuery
+    STALE_SQL = <<-SQL.squish
+      crm_synchronisations.id IS NULL
+      OR crm_synchronisations.crm_name != ?
+      OR crm_synchronisations.last_synced_at < users.updated_at
+      OR crm_synchronisations.last_synced_at < investments.updated_at
+    SQL
+
+    def self.call(model, crm_name)
+      model
+        .left_joins(:crm_synchronisations, :investments)
+        .where(STALE_SQL, crm_name.to_s)
+        .distinct
+    end
+  end
 end
 ```
 
@@ -254,15 +319,13 @@ Etlify::CRM.register(
 ### How it works
 
 - `Etlify::StaleRecords::Finder` scans all **etlified models**
-  (those that called `#{crm_name}_etlified_with`) and builds, for each,
-  a **SQL relation selecting only the PKs** of stale records.
-- A record is considered stale if:
+  (those that called `#{crm_name}_etlified_with`) and calls the `stale_scope`
+  to get a **SQL relation selecting only the PKs** of stale records.
+- The `stale_scope` you define determines which records are considered stale.
+  Typically, a record is stale if:
   - it **has no** `crm_synchronisation` row, **or**
-  - its `last_synced_at` is **older** than the **max** `updated_at` among:
-    - its own row,
-    - and its declared dependencies (via `dependencies:` in `etlified_with`,
-      supporting `belongs_to`, `has_one`, `has_many`, `has_* :through`,
-      and polymorphic `belongs_to`).
+  - its `last_synced_at` is **older** than the record's `updated_at`
+    (or any related model you include in your scope).
 - `Etlify::StaleRecords::BatchSync` then iterates **by ID batches**:
   - in **async: true** mode (default): **enqueue** one job per ID without loading
     full records into memory;
@@ -276,8 +339,8 @@ Etlify::CRM.register(
   via ActiveJob.
 - **Stable payloads**: ensure your serializers produce deterministic Hashes to
   benefit from **idempotence**.
-- **Dependencies**: declare `dependencies:` accurately in `etlified_with` so
-  indirect changes trigger resyncs.
+- **Stale scope**: write your `stale_scope` to include all related models that
+  affect your serializer output, so indirect changes trigger resyncs.
 - **Batch size**: adjust `batch_size` to your DB to balance throughput and memory.
 
 ---

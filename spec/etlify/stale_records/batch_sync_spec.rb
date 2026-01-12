@@ -12,6 +12,17 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
 
   let!(:company) { Company.create!(name: "CapSens", domain: "capsens.eu") }
 
+  let(:default_stale_scope) do
+    ->(model, crm_name) do
+      stale_sql = <<-SQL.squish
+        crm_synchronisations.id IS NULL
+        OR crm_synchronisations.crm_name != ?
+        OR crm_synchronisations.last_synced_at < #{model.table_name}.updated_at
+      SQL
+      model.left_joins(:crm_synchronisations).where(stale_sql, crm_name.to_s)
+    end
+  end
+
   def create_user!(index:)
     User.create!(
       email: "user#{index}@example.com",
@@ -28,11 +39,13 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
         }
       )
@@ -64,11 +77,13 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
         }
       )
@@ -99,11 +114,13 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
         }
       )
@@ -139,6 +156,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
         }
       )
@@ -177,6 +195,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
         }
       )
@@ -232,11 +251,13 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "email",
             crm_object_type: "contacts",
+            stale_scope: default_stale_scope,
           },
         }
       )
@@ -270,11 +291,13 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
           adapter: Etlify::Adapters::NullAdapter.new,
           id_property: "email",
           crm_object_type: "contacts",
+          stale_scope: default_stale_scope,
         },
         salesforce: {
           adapter: Etlify::Adapters::NullAdapter.new,
           id_property: "email",
           crm_object_type: "contacts",
+          stale_scope: default_stale_scope,
         },
       }
 
