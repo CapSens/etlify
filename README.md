@@ -167,6 +167,50 @@ user.crm_sync!(async: false)
 user.hubspot_crm_delete! # or user.#{registered_crm_name}_crm_delete!
 ```
 
+### Skip sync if record is fresh (rate limit friendly)
+
+When syncing many records, you may want to avoid enqueuing jobs for records that haven't changed. This is especially useful for APIs with strict rate limits (e.g. HubSpot Search API: 5 req/sec).
+
+```ruby
+# Only enqueues a job if the payload has changed since last sync
+user.hubspot_sync!(skip_if_fresh: true)
+# Returns :not_modified if nothing to sync (no job enqueued)
+
+# Check if a record needs syncing without triggering it
+user.hubspot_stale?  # => true if payload changed, false if fresh
+```
+
+**Usage in callbacks:**
+
+```ruby
+class User < ApplicationRecord
+  include Etlify::Model
+
+  hubspot_etlified_with(
+    serializer: UserSerializer,
+    crm_object_type: "contacts",
+    id_property: :email
+  )
+
+  after_commit :sync_to_hubspot, on: [:create, :update]
+
+  private
+
+  def sync_to_hubspot
+    hubspot_sync!(skip_if_fresh: true)
+  end
+end
+```
+
+**Usage in batch operations:**
+
+```ruby
+# Only enqueue jobs for records that actually need syncing
+User.find_each do |user|
+  user.hubspot_sync!(skip_if_fresh: true)
+end
+```
+
 ### Custom serializer example
 
 ```ruby
