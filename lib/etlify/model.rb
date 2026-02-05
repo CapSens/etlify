@@ -80,6 +80,7 @@ module Etlify
         payload_m = "#{crm_name}_build_payload"
         sync_m    = "#{crm_name}_sync!"
         delete_m  = "#{crm_name}_delete!"
+        stale_m   = "#{crm_name}_stale?"
 
         unless klass.method_defined?(payload_m)
           klass.define_method(payload_m) do
@@ -88,8 +89,14 @@ module Etlify
         end
 
         unless klass.method_defined?(sync_m)
-          klass.define_method(sync_m) do |async: true, job_class: nil|
-            crm_sync!(crm_name: crm_name, async: async, job_class: job_class)
+          klass.define_method(sync_m) do |async: true, job_class: nil, skip_if_fresh: false|
+            crm_sync!(crm_name: crm_name, async: async, job_class: job_class, skip_if_fresh: skip_if_fresh)
+          end
+        end
+
+        unless klass.method_defined?(stale_m)
+          klass.define_method(stale_m) do
+            crm_stale?(crm_name: crm_name)
           end
         end
 
@@ -129,6 +136,22 @@ module Etlify
       respond_to?(:crm_synchronisation) && crm_synchronisation.present?
     end
 
+    # Check if the record needs to be synced (payload has changed since last sync).
+    # @param crm_name [Symbol, String] the CRM to check
+    # @return [Boolean] true if the record needs syncing, false if fresh
+    def crm_stale?(crm_name: nil)
+      raise ArgumentError, "crm_name is required" if crm_name.nil?
+      return true unless allow_sync_for?(crm_name)
+
+      payload = build_crm_payload(crm_name: crm_name)
+      digest = Etlify.config.digest_strategy.call(payload)
+
+      sync_record = crm_synchronisations.find_by(crm_name: crm_name.to_s)
+      return true if sync_record.nil?
+
+      sync_record.stale?(digest)
+    end
+
     def build_crm_payload(crm_name: nil)
       raise ArgumentError, "crm_name is required" if crm_name.nil?
 
@@ -146,9 +169,14 @@ module Etlify
       end
     end
 
-    def crm_sync!(crm_name: nil, async: true, job_class: nil)
+    def crm_sync!(crm_name: nil, async: true, job_class: nil, skip_if_fresh: false)
       raise ArgumentError, "crm_name is required" if crm_name.nil?
       return false unless allow_sync_for?(crm_name)
+
+      # Skip enqueuing if record is fresh (no changes since last sync)
+      if skip_if_fresh && !crm_stale?(crm_name: crm_name)
+        return :not_modified
+      end
 
       if async
         jc = resolve_job_class_for(crm_name, override: job_class)

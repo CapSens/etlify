@@ -180,7 +180,7 @@ RSpec.describe Etlify::Model do
       expect(inst.seen_kw).to eq({crm_name: :hubspot})
     end
 
-    it "delegates sync helper with crm_name, async, job_class" do
+    it "delegates sync helper with crm_name, async, job_class, skip_if_fresh" do
       klass = build_including_class do
         attr_reader :seen_sync
         def crm_sync!(**kw)
@@ -191,7 +191,7 @@ RSpec.describe Etlify::Model do
       inst = klass.new
       expect(inst.hubspot_sync!(async: false, job_class: "X")).to eq(:done)
       expect(inst.seen_sync).to eq(
-        {crm_name: :hubspot, async: false, job_class: "X"}
+        {crm_name: :hubspot, async: false, job_class: "X", skip_if_fresh: false}
       )
     end
 
@@ -422,6 +422,29 @@ RSpec.describe Etlify::Model do
         .with(inst, crm_name: :hubspot)
       inst.crm_sync!(crm_name: :hubspot, async: false)
     end
+
+    it "skips enqueuing when skip_if_fresh: true and record is fresh" do
+      inst = klass.new
+      allow(inst).to receive(:allow_sync_for?).and_return(true)
+      allow(inst).to receive(:crm_stale?).with(crm_name: :hubspot).and_return(false)
+
+      result = inst.crm_sync!(crm_name: :hubspot, async: true, skip_if_fresh: true)
+      expect(result).to eq(:not_modified)
+    end
+
+    it "enqueues when skip_if_fresh: true and record is stale" do
+      job = Class.new do
+        def self.perform_later(*)
+        end
+      end
+      inst = klass.new
+      allow(inst).to receive(:allow_sync_for?).and_return(true)
+      allow(inst).to receive(:crm_stale?).with(crm_name: :hubspot).and_return(true)
+      allow(inst).to receive(:resolve_job_class_for).and_return(job)
+
+      expect(job).to receive(:perform_later).with(klass.name, 42, "hubspot")
+      inst.crm_sync!(crm_name: :hubspot, async: true, skip_if_fresh: true)
+    end
   end
 
   describe "#crm_delete!" do
@@ -608,6 +631,67 @@ RSpec.describe Etlify::Model do
 
       inst.define_singleton_method(:crm_synchronisation) { Object.new }
       expect(inst.crm_synced?).to be true
+    end
+
+    describe "#crm_stale?" do
+      let(:serializer_class) do
+        Class.new do
+          def initialize(record)
+            @record = record
+          end
+
+          def as_crm_payload
+            {name: @record.name}
+          end
+        end
+      end
+
+      before do
+        EtlifyThing.class_eval do
+          class_attribute :test_serializer
+        end
+        EtlifyThing.test_serializer = serializer_class
+
+        allow(EtlifyThing).to receive(:etlify_crms).and_return({
+          hubspot: {
+            serializer: serializer_class,
+            guard: ->(_r) { true },
+            crm_object_type: :contact,
+            id_property: :email,
+            adapter: Class.new,
+          }
+        })
+      end
+
+      it "requires crm_name" do
+        inst = EtlifyThing.create!(name: "test")
+        expect { inst.crm_stale? }.to raise_error(ArgumentError, /crm_name is required/)
+      end
+
+      it "returns true when no sync record exists" do
+        inst = EtlifyThing.create!(name: "test")
+        expect(inst.crm_stale?(crm_name: :hubspot)).to be true
+      end
+
+      it "returns true when digest differs from last_digest" do
+        inst = EtlifyThing.create!(name: "test")
+        inst.crm_synchronisations.create!(
+          crm_name: "hubspot",
+          last_digest: "old_digest"
+        )
+        expect(inst.crm_stale?(crm_name: :hubspot)).to be true
+      end
+
+      it "returns false when digest matches last_digest" do
+        inst = EtlifyThing.create!(name: "test")
+        payload = inst.build_crm_payload(crm_name: :hubspot)
+        current_digest = Etlify.config.digest_strategy.call(payload)
+        inst.crm_synchronisations.create!(
+          crm_name: "hubspot",
+          last_digest: current_digest
+        )
+        expect(inst.crm_stale?(crm_name: :hubspot)).to be false
+      end
     end
   end
 end
