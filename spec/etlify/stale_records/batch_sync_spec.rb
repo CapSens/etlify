@@ -1,5 +1,14 @@
 require "rails_helper"
 
+# Custom job class for testing job_class option
+class CustomSyncJob < ActiveJob::Base
+  queue_as :custom_queue
+
+  def perform(model_name, id, crm_name)
+    # noop for testing
+  end
+end
+
 RSpec.describe Etlify::StaleRecords::BatchSync do
   include AJTestAdapterHelpers
 
@@ -54,7 +63,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(pairs).to include(["User", user1.id], ["User", user2.id])
 
       crm_names = jobs.map { |job| job[:args][2] }.uniq
-      expect(crm_names).to match_array(%w[hubspot salesforce])
+      expect(crm_names).to match_array(["hubspot", "salesforce"])
     end
 
     it "enqueues two jobs for one record linked to two CRMs" do
@@ -89,7 +98,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(job_user_ids).to all(eq(user.id))
 
       crm_names = jobs.map { |job| job[:args][2] }.uniq
-      expect(crm_names).to match_array(%w[hubspot salesforce])
+      expect(crm_names).to match_array(["hubspot", "salesforce"])
     end
 
     it "filters by crm_name when provided (only that CRM is enqueued)" do
@@ -263,6 +272,71 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
     end
   end
 
+  describe "custom job_class option" do
+    before do
+      Etlify::CRM.register(
+        :custom_crm,
+        adapter: Etlify::Adapters::NullAdapter.new,
+        options: {job_class: "CustomSyncJob"}
+      )
+    end
+
+    after do
+      Etlify::CRM.registry.delete(:custom_crm)
+    end
+
+    it "uses the custom job_class when defined in CRM options" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          custom_crm: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      user = create_user!(index: 1)
+
+      stats = described_class.call(async: true, batch_size: 10)
+
+      expect(stats[:total]).to eq(1)
+      jobs = aj_enqueued_jobs
+      expect(jobs.size).to eq(1)
+      expect(jobs.first[:job]).to eq(CustomSyncJob)
+      expect(jobs.first[:args]).to eq(["User", user.id, "custom_crm"])
+    end
+
+    it "falls back to Etlify::SyncJob when no custom job_class is defined" do
+      Etlify::CRM.register(
+        :default_job_crm,
+        adapter: Etlify::Adapters::NullAdapter.new,
+        options: {}
+      )
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          default_job_crm: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      create_user!(index: 1)
+
+      stats = described_class.call(async: true, batch_size: 10)
+
+      expect(stats[:total]).to eq(1)
+      jobs = aj_enqueued_jobs
+      expect(jobs.size).to eq(1)
+      expect(jobs.first[:job]).to eq(Etlify::SyncJob)
+
+      Etlify::CRM.registry.delete(:default_job_crm)
+    end
+  end
+
   describe "multiple models in async mode" do
     it "aggregates per_model counts across models and CRMs" do
       crm_config = {
@@ -298,7 +372,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(jobs_by_model).to eq("User" => 2, "Company" => 2)
 
       crm_names = jobs.map { |job| job[:args][2] }.uniq
-      expect(crm_names).to match_array(%w[hubspot salesforce])
+      expect(crm_names).to match_array(["hubspot", "salesforce"])
     end
   end
 end

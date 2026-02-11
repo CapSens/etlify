@@ -92,9 +92,23 @@ module Etlify
 
       # Enqueue one job per id without loading the records.
       def enqueue_async(model, ids, crm_name:)
+        job_class = job_class_for(crm_name)
         ids.each do |id|
-          Etlify::SyncJob.perform_later(model.name, id, crm_name.to_s)
+          job_class.perform_later(model.name, id, crm_name.to_s)
         end
+      end
+
+      # Returns the job class to use for enqueuing sync jobs.
+      # Uses the custom job_class from CRM options if defined,
+      # otherwise falls back to Etlify::SyncJob.
+      def job_class_for(crm_name)
+        crm_config = Etlify::CRM.registry[crm_name.to_sym]
+        return Etlify::SyncJob unless crm_config
+
+        custom_class = crm_config.options[:job_class]
+        return Etlify::SyncJob unless custom_class
+
+        custom_class.constantize
       end
     end
   end
