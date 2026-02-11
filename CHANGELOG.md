@@ -1,5 +1,7 @@
 # UNRELEASED
 
+- Fix: Support custom `job_class` in `BatchSync` via CRM options
+
 # V0.9.1
 
 - fix: Third level depencies errors in `Etlify::StaleRecords::Finder`
