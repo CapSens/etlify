@@ -44,3 +44,7 @@ Thumbs.db
 
 # Ignore pry history
 .pry_history
+
+# Ignore Claude Code files
+.claude/
+CLAUDE.md
