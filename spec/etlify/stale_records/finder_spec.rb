@@ -904,4 +904,82 @@ RSpec.describe Etlify::StaleRecords::Finder do
       end
     end
   end
+
+  # -------------------- stale_scope filtering -------------------------
+
+  describe "stale_scope filtering" do
+    it "restricts stale records to those matching the scope" do
+      marketplace_user = User.create!(email: "market@x.x")
+      other_user = User.create!(email: "other@x.x")
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            dependencies: [],
+            stale_scope: -> { where("email LIKE ?", "%market%") }
+          }
+        }
+      )
+
+      ids = user_ids_for(:hubspot)
+      expect(ids).to include(marketplace_user.id)
+      expect(ids).not_to include(other_user.id)
+    end
+
+    it "returns all stale records when stale_scope is nil" do
+      user_a = User.create!(email: "a-nil@x.x")
+      user_b = User.create!(email: "b-nil@x.x")
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            dependencies: [],
+            stale_scope: nil
+          }
+        }
+      )
+
+      ids = user_ids_for(:hubspot)
+      expect(ids).to include(user_a.id, user_b.id)
+    end
+
+    it "combines stale_scope with staleness threshold" do
+      marketplace_user = User.create!(email: "market-combo@x.x", updated_at: now)
+      other_user = User.create!(email: "other-combo@x.x", updated_at: now)
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            dependencies: [],
+            stale_scope: -> { where("email LIKE ?", "%market%") }
+          }
+        }
+      )
+
+      # Both synced fresh => neither stale
+      create_sync!(marketplace_user, crm: :hubspot, last_synced_at: now + 10)
+      create_sync!(other_user, crm: :hubspot, last_synced_at: now + 10)
+
+      ids = user_ids_for(:hubspot)
+      expect(ids).not_to include(marketplace_user.id)
+      expect(ids).not_to include(other_user.id)
+
+      # Make marketplace_user stale, other_user also stale but excluded by scope
+      marketplace_user.update!(updated_at: now + 20)
+      other_user.update!(updated_at: now + 20)
+
+      ids = user_ids_for(:hubspot)
+      expect(ids).to include(marketplace_user.id)
+      expect(ids).not_to include(other_user.id)
+    end
+  end
 end

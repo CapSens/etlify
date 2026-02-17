@@ -54,6 +54,7 @@ module Etlify
           id_property:,
           dependencies: [],
           sync_if: ->(_r) { true },
+          stale_scope: nil,
           job_class: nil
         |
           reg = Etlify::CRM.fetch(crm_name)
@@ -61,6 +62,7 @@ module Etlify
           conf = {
             serializer: serializer,
             guard: sync_if,
+            stale_scope: stale_scope,
             crm_object_type: crm_object_type,
             id_property: id_property,
             dependencies: Array(dependencies).map(&:to_sym),

@@ -120,6 +120,27 @@ class User < ApplicationRecord
 end
 ```
 
+#### Restricting the Finder scope with `stale_scope`
+
+By default, the `StaleRecords::Finder` scans **all** records of an etlified model.
+If only a subset of records should ever be synced (e.g. only `marketplace` operations),
+you can pass a `stale_scope` lambda that returns an ActiveRecord scope:
+
+```ruby
+class Trading::Operation < ApplicationRecord
+  include Etlify::Model
+
+  scope :marketplace, -> { where(category: "marketplace") }
+
+  hubspot_etlified_with(
+    serializer: TradingOperationSerializer,
+    crm_object_type: "deals",
+    id_property: :id,
+    sync_if: ->(op) { op.marketplace? },
+    stale_scope: -> { marketplace }
+  )
+end
+
 ### Writing a serializer
 
 ```ruby

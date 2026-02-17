@@ -156,6 +156,36 @@ RSpec.describe Etlify::Model do
         )
       end.to raise_error(RuntimeError, "boom")
     end
+
+    it "stores stale_scope in configuration when provided" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+
+      scope_lambda = -> { where(active: true) }
+      klass.hubspot_etlified_with(
+        serializer: dummy_serializer,
+        crm_object_type: :contact,
+        id_property: :external_id,
+        stale_scope: scope_lambda
+      )
+
+      conf = klass.etlify_crms[:hubspot]
+      expect(conf[:stale_scope]).to eq(scope_lambda)
+    end
+
+    it "defaults stale_scope to nil when not provided" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+
+      klass.hubspot_etlified_with(
+        serializer: dummy_serializer,
+        crm_object_type: :contact,
+        id_property: :external_id
+      )
+
+      conf = klass.etlify_crms[:hubspot]
+      expect(conf[:stale_scope]).to be_nil
+    end
   end
 
   describe ".define_crm_instance_helpers_on" do
