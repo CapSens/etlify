@@ -117,10 +117,21 @@ module Etlify
           sub_from  = Arel.sql("(#{sub_sql}) AS #{tbl_alias}")
 
           # Keep a single id column and stable order.
-          model.unscoped
+          outer = model.unscoped
               .from(sub_from)
               .select("id")
               .reorder("id ASC")
+
+          # Apply stale_scope if configured to restrict which records the Finder
+          # considers. This avoids scanning records that sync_if would skip anyway,
+          # preventing unnecessary CrmSynchronisation rows from being created.
+          stale_scope = model.etlify_crms.dig(crm_name, :stale_scope)
+          if stale_scope
+            scoped_ids = model.instance_exec(&stale_scope).select(model.primary_key)
+            outer.where(id: scoped_ids)
+          else
+            outer
+          end
         end
 
         # ---------- Threshold (owner + dependencies) ----------

@@ -1,5 +1,8 @@
 # UNRELEASED
 
+- Feat: Add `stale_scope` option to CRM DSL to restrict which records the `StaleRecords::Finder` considers. Accepts a lambda returning an ActiveRecord scope, applied at SQL level before any record is processed. This prevents unnecessary `CrmSynchronisation` rows for records that `sync_if` would skip. Models that do not specify `stale_scope` are not affected — the Finder behaves exactly as before.
+
+
 # V0.9.3
 
 - Fix: Support custom `job_class` in `BatchSync` via CRM options
