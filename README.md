@@ -140,6 +140,7 @@ class Trading::Operation < ApplicationRecord
     stale_scope: -> { marketplace }
   )
 end
+```
 
 ### Writing a serializer
 
