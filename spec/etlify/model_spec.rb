@@ -186,6 +186,20 @@ RSpec.describe Etlify::Model do
       conf = klass.etlify_crms[:hubspot]
       expect(conf[:stale_scope]).to be_nil
     end
+
+    it "raises when stale_scope does not respond to :call" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+
+      expect do
+        klass.hubspot_etlified_with(
+          serializer: dummy_serializer,
+          crm_object_type: :contact,
+          id_property: :external_id,
+          stale_scope: "not_a_callable"
+        )
+      end.to raise_error(ArgumentError, /stale_scope must respond to :call/)
+    end
   end
 
   describe ".define_crm_instance_helpers_on" do

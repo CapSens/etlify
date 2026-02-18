@@ -57,6 +57,8 @@ module Etlify
           stale_scope: nil,
           job_class: nil
         |
+          raise ArgumentError, "stale_scope must respond to :call" if stale_scope && !stale_scope.respond_to?(:call)
+
           reg = Etlify::CRM.fetch(crm_name)
 
           conf = {
