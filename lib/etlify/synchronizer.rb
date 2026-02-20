@@ -64,7 +64,7 @@ module Etlify
     rescue => e
       sync_line.update!(
         last_error: e.message,
-        error_count: (sync_line.error_count || 0) + 1
+        error_count: sync_line.error_count.to_i + 1
       )
       :error
     end
