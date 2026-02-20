@@ -3,8 +3,8 @@ require "rails/generators/active_record"
 
 module Etlify
   module Generators
-    class MigrationGenerator < ActiveRecord::Generators::Base
-      DEFAULT_MIGRATION_FILENAME = "create_crm_synchronisations"
+    class AddErrorCountGenerator < ActiveRecord::Generators::Base
+      DEFAULT_MIGRATION_FILENAME = "add_error_count_to_crm_synchronisations"
 
       source_root File.expand_path("templates", __dir__)
 
@@ -13,7 +13,7 @@ module Etlify
 
       def copy_migration
         migration_template(
-          "create_crm_synchronisations.rb.tt",
+          "add_error_count_to_crm_synchronisations.rb.tt",
           "db/migrate/#{file_name}.rb"
         )
       end

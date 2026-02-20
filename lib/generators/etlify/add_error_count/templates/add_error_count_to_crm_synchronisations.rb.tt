@@ -1,0 +1,5 @@
+class <%= file_name.camelize %> < ActiveRecord::Migration[<%= ActiveRecord::VERSION::MAJOR %>.<%= ActiveRecord::VERSION::MINOR %>]
+  def change
+    add_column :crm_synchronisations, :error_count, :integer, default: 0, null: false
+  end
+end

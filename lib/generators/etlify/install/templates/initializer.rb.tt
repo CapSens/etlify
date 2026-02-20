@@ -20,4 +20,8 @@ Etlify.configure do |config|
   # @digest_strategy = Etlify::Digest.method(:stable_sha256)
   # @job_queue_name  = "low"
   # @cache_store = Rails.cache || ActiveSupport::Cache::MemoryStore.new
+
+  # Maximum consecutive sync errors before excluding from auto-retry (default: 3).
+  # Override per CRM: options: { max_sync_errors: 5 }
+  # config.max_sync_errors = 3
 end

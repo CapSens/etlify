@@ -150,5 +150,65 @@ RSpec.describe CrmSynchronisation, type: :model do
       expect(described_class.with_error).to eq([bad])
       expect(described_class.without_error).to eq([ok])
     end
+
+    describe ".retry_exhausted" do
+      it "returns records with error_count >= limit" do
+        ok = described_class.create!(
+          resource: user,
+          crm_name: "hubspot",
+          crm_id: "ok-2",
+          error_count: 1
+        )
+        exhausted = described_class.create!(
+          resource: company,
+          crm_name: "hubspot",
+          crm_id: "ko-2",
+          error_count: 3
+        )
+
+        result = described_class.retry_exhausted(3)
+        expect(result).to include(exhausted)
+        expect(result).not_to include(ok)
+      end
+    end
+
+    describe ".retryable" do
+      it "returns records with error_count < limit" do
+        ok = described_class.create!(
+          resource: user,
+          crm_name: "hubspot",
+          crm_id: "ok-3",
+          error_count: 2
+        )
+        exhausted = described_class.create!(
+          resource: company,
+          crm_name: "hubspot",
+          crm_id: "ko-3",
+          error_count: 3
+        )
+
+        result = described_class.retryable(3)
+        expect(result).to include(ok)
+        expect(result).not_to include(exhausted)
+      end
+    end
+  end
+
+  describe "#reset_error_count!" do
+    it "resets error_count to 0 and clears last_error" do
+      sync = described_class.create!(
+        resource: user,
+        crm_name: "hubspot",
+        crm_id: "reset-1",
+        error_count: 5,
+        last_error: "server error"
+      )
+
+      sync.reset_error_count!
+      sync.reload
+
+      expect(sync.error_count).to eq(0)
+      expect(sync.last_error).to be_nil
+    end
   end
 end
