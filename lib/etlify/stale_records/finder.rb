@@ -97,6 +97,15 @@ module Etlify
             )
           where_pred = crm_arel[:id].eq(nil).or(last_synced_expr.lt(threshold_expr))
 
+          # Exclude records that have exhausted their retry budget.
+          max_errors = max_sync_errors_for(crm_name)
+          error_count_ok = crm_arel[:id].eq(nil).or(
+            Arel::Nodes::NamedFunction.new(
+              "COALESCE", [crm_arel[:error_count], Arel.sql("0")]
+            ).lt(max_errors)
+          )
+          where_pred = where_pred.and(error_count_ok)
+
           qualified_pk_sql =
             "#{conn.quote_table_name(owner_tbl)}." \
             "#{conn.quote_column_name(model.primary_key)}"
@@ -131,6 +140,19 @@ module Etlify
             outer.where(id: scoped_ids)
           else
             outer
+          end
+        end
+
+        # ---------- Max sync errors resolution ----------
+
+        def max_sync_errors_for(crm_name)
+          registry_item = Etlify::CRM.registry[crm_name.to_sym]
+          if registry_item
+            registry_item.options.fetch(
+              :max_sync_errors, Etlify.config.max_sync_errors
+            )
+          else
+            Etlify.config.max_sync_errors
           end
         end
 

@@ -66,6 +66,7 @@ RSpec.configure do |config|
         t.text    :last_error
         t.string  :resource_type, null: false
         t.integer :resource_id, null: false
+        t.integer :error_count, default: 0, null: false
         t.timestamps
       end
 
