@@ -244,8 +244,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
       expect(result.keys).to eq([User])
     end
 
-    it "skips STI subclasses when the base class is already discovered" do
-      # Define an STI subclass that shares the subscriptions table
+    it "skips STI subclasses that only inherited etlify_crms from the base class" do
       sti_sub = Class.new(Subscription) { self.table_name = "subscriptions" }
       Object.const_set("LendingSubscription", sti_sub)
 
@@ -263,6 +262,39 @@ RSpec.describe Etlify::StaleRecords::Finder do
       result = described_class.call
       expect(result.keys).to include(Subscription)
       expect(result.keys).not_to include(sti_sub)
+    ensure
+      Object.send(:remove_const, "LendingSubscription") if Object.const_defined?("LendingSubscription")
+    end
+
+    it "processes STI subclasses that have their own etlify_crms config" do
+      sti_sub = Class.new(Subscription) { self.table_name = "subscriptions" }
+      Object.const_set("LendingSubscription", sti_sub)
+
+      config = {
+        hubspot: {
+          adapter: Etlify::Adapters::NullAdapter.new,
+          id_property: "id",
+          crm_object_type: "deals",
+          dependencies: []
+        }
+      }
+      # Only the subclass has the config, not the base class
+      allow(sti_sub).to receive(:etlify_crms).and_return(config)
+
+      # Create a lending subscription
+      Subscription.create!(users_profile_id: nil, type: "LendingSubscription")
+      # Create a non-lending subscription (should not appear)
+      Subscription.create!(users_profile_id: nil, type: nil)
+
+      result = described_class.call
+      expect(result.keys).to include(sti_sub)
+
+      ids = result[sti_sub][:hubspot].pluck(:id)
+      lending_ids = Subscription.where(type: "LendingSubscription").pluck(:id)
+      other_ids = Subscription.where(type: nil).pluck(:id)
+
+      expect(ids).to match_array(lending_ids)
+      expect(ids).not_to include(*other_ids)
     ensure
       Object.send(:remove_const, "LendingSubscription") if Object.const_defined?("LendingSubscription")
     end
