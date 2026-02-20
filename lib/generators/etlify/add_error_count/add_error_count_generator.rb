@@ -8,6 +8,9 @@ module Etlify
 
       source_root File.expand_path("templates", __dir__)
 
+      argument :name, type: :string,
+                      default: DEFAULT_MIGRATION_FILENAME
+
       def copy_migration
         migration_template(
           "add_error_count_to_crm_synchronisations.rb.tt",
