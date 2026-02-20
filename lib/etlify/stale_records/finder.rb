@@ -503,7 +503,9 @@ module Etlify
           Arel::Nodes::NamedFunction.new(greatest_function_name(conn), exprs)
         end
 
-        def fn_coalesce(_conn) = "COALESCE"
+        def fn_coalesce(_conn)
+          "COALESCE"
+        end
 
         # Adapter-agnostic "epoch" as an Arel node.
         # - PostgreSQL -> CAST('1970-01-01 00:00:00' AS TIMESTAMP)

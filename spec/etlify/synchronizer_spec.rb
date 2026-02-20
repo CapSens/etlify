@@ -1,5 +1,11 @@
 require "rails_helper"
 
+class FailingAdapter
+  def upsert!(payload:, id_property:, object_type:)
+    raise "boom"
+  end
+end
+
 RSpec.describe Etlify::Synchronizer do
   let(:company) { Company.create!(name: "CapSens", domain: "capsens.eu") }
   let(:user) do
@@ -132,12 +138,6 @@ RSpec.describe Etlify::Synchronizer do
   end
 
   context "when adapter raises" do
-    class FailingAdapter
-      def upsert!(payload:, id_property:, object_type:)
-        raise "boom"
-      end
-    end
-
     it "records last_error and returns :error", :aggregate_failures do
       allow(User).to receive(:etlify_crms).and_return(
         {

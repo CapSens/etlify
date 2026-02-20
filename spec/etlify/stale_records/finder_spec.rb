@@ -819,7 +819,9 @@ RSpec.describe Etlify::StaleRecords::Finder do
     it "returns {} when no model qualifies" do
       klass = Class.new(ApplicationRecord) do
         self.table_name = "projects"
-        def self.etlify_crms = {}
+        def self.etlify_crms
+          {}
+        end
       end
       Object.const_set("NopeModel", klass)
       results = described_class.call(models: [NopeModel])

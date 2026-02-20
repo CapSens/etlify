@@ -83,11 +83,11 @@ RSpec.configure do |config|
       end
     end
 
-    class Company < ApplicationRecord
+    class Company < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
       has_many :crm_synchronisations, as: :resource, dependent: :destroy
     end
 
-    class User < ApplicationRecord
+    class User < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
       belongs_to :company, optional: true
       has_many :crm_synchronisations, as: :resource, dependent: :destroy
 

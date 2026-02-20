@@ -21,7 +21,7 @@ module Etlify
         (name.presence || DEFAULT_MIGRATION_FILENAME).underscore
       end
 
-      def self.next_migration_number(_dirname)
+      def self.next_migration_number(_dirname) # rubocop:disable Lint/IneffectiveAccessModifier
         Time.now.utc.strftime("%Y%m%d%H%M%S")
       end
     end
