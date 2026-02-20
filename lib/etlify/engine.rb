@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "rails/engine"
 
 begin
@@ -14,6 +16,12 @@ module Etlify
       # Defer until AR is loaded to avoid touching the connection too early.
       ActiveSupport.on_load(:active_record) do
         Etlify::Engine.check_crm_name_column_safely
+      end
+    end
+
+    initializer "etlify.check_sync_dependencies_table" do
+      ActiveSupport.on_load(:active_record) do
+        Etlify::Engine.check_sync_dependencies_table_safely
       end
     end
 
@@ -42,6 +50,27 @@ module Etlify
       end
     end
 
+    # --- Sync dependencies table check ----------------------------------------
+    def self.check_sync_dependencies_table_safely
+      return if skip_schema_checks?
+
+      begin
+        connection = ActiveRecord::Base.connection
+        table = "etlify_sync_dependencies"
+
+        if connection.data_source_exists?(table)
+          log_debug(
+            'Table "etlify_sync_dependencies" found.'
+          )
+          return
+        end
+
+        warn_missing_sync_dependencies_table
+      rescue ActiveRecord::NoDatabaseError, ActiveRecord::StatementInvalid => e
+        log_debug("Skip check: DB not ready (#{e.class}: #{e.message})")
+      end
+    end
+
     # --- Helpers --------------------------------------------------------------
     def self.warn_missing_column
       msg =
@@ -56,6 +85,21 @@ module Etlify
         ActiveSupport::Deprecation::DEFAULT.warn("[Etlify] #{msg}")
       else
         warn("[Etlify] #{msg}") # Fallback to kernel warn if deprecation missing
+      end
+    end
+
+    def self.warn_missing_sync_dependencies_table
+      msg =
+        'Table "etlify_sync_dependencies" is missing. ' \
+        "Please run: rails g etlify:sync_dependencies_migration && " \
+        "rails db:migrate"
+
+      Rails.logger.warn("[Etlify] #{msg}") if defined?(Rails.logger)
+
+      if defined?(ActiveSupport::Deprecation::DEFAULT)
+        ActiveSupport::Deprecation::DEFAULT.warn("[Etlify] #{msg}")
+      else
+        warn("[Etlify] #{msg}")
       end
     end
 
@@ -90,9 +134,17 @@ module Etlify
       rescue
         []
       end
-      db_tasks = %w[
-        db:create db:drop db:environment:set db:prepare db:migrate db:rollback
-        db:schema:load db:structure:load db:setup db:reset
+      db_tasks = [
+        "db:create",
+        "db:drop",
+        "db:environment:set",
+        "db:prepare",
+        "db:migrate",
+        "db:rollback",
+        "db:schema:load",
+        "db:structure:load",
+        "db:setup",
+        "db:reset",
       ]
       (tasks & db_tasks).any?
     end

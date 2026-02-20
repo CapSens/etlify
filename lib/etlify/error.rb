@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Etlify
   class Error < StandardError
     attr_reader(
@@ -33,14 +35,24 @@ module Etlify
 
   # HTTP errors
   class ApiError < Error; end
-  class Unauthorized < ApiError; end            # 401/403
-  class NotFound < ApiError; end                # 404
-  class RateLimited < ApiError; end             # 429
-  class ValidationFailed < ApiError; end        # 409/422
+
+  # 401/403
+  class Unauthorized < ApiError; end
+
+  # 404
+  class NotFound < ApiError; end
+
+  # 429
+  class RateLimited < ApiError; end
+
+  # 409/422
+  class ValidationFailed < ApiError; end
 
   # Internal errors
   class SyncError < StandardError; end
 
-  # Configuration error (update)
+  # Configuration errors
   class MissingColumnError < StandardError; end
+
+  class MissingTableError < StandardError; end
 end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "simplecov"
 SimpleCov.start "rails"
 
@@ -8,7 +10,7 @@ require "active_record"
 require "active_job"
 require "logger"
 require "active_support"
-require "active_support/time"                 # for Time.current / time zone
+require "active_support/time" # for Time.current / time zone
 require "support/time_helpers"
 require "support/aj_test_adapter_helpers"
 require "timecop"
@@ -36,6 +38,11 @@ RSpec.configure do |config|
       example.run
       raise ActiveRecord::Rollback
     end
+  end
+
+  # Reset DependencyResolver table existence cache between tests
+  config.after(:each) do
+    Etlify::DependencyResolver.reset_table_exists_cache!
   end
 
   # suppress ActiveJob and Thor output
@@ -81,13 +88,42 @@ RSpec.configure do |config|
         t.integer :company_id
         t.timestamps
       end
+
+      create_table :contacts, force: true do |t|
+        t.string  :email
+        t.string  :full_name
+        t.integer :company_id
+        t.timestamps
+      end
+
+      create_table :investments, force: true do |t|
+        t.integer :contact_id
+        t.integer :company_id
+        t.decimal :amount
+        t.string  :reference
+        t.timestamps
+      end
+
+      create_table :etlify_sync_dependencies, force: true do |t|
+        t.string  :resource_type,        null: false
+        t.bigint  :resource_id,          null: false
+        t.string  :parent_resource_type, null: false
+        t.bigint  :parent_resource_id,   null: false
+        t.string  :crm_name,             null: false
+        t.timestamps
+      end
     end
 
-    class Company < ApplicationRecord
+    class Company < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
       has_many :crm_synchronisations, as: :resource, dependent: :destroy
+
+      def build_crm_payload(crm_name:)
+        conf = self.class.etlify_crms.fetch(crm_name.to_sym)
+        conf[:serializer].new(self).as_crm_payload
+      end
     end
 
-    class User < ApplicationRecord
+    class User < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
       belongs_to :company, optional: true
       has_many :crm_synchronisations, as: :resource, dependent: :destroy
 
@@ -103,6 +139,28 @@ RSpec.configure do |config|
             crm_object_type: "contacts",
           },
         }
+      end
+    end
+
+    class Contact < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
+      belongs_to :company, optional: true
+      has_many :crm_synchronisations, as: :resource, dependent: :destroy
+      has_many :investments
+
+      def build_crm_payload(crm_name:)
+        conf = self.class.etlify_crms.fetch(crm_name.to_sym)
+        conf[:serializer].new(self).as_crm_payload
+      end
+    end
+
+    class Investment < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
+      belongs_to :contact, optional: true
+      belongs_to :company, optional: true
+      has_many :crm_synchronisations, as: :resource, dependent: :destroy
+
+      def build_crm_payload(crm_name:)
+        conf = self.class.etlify_crms.fetch(crm_name.to_sym)
+        conf[:serializer].new(self).as_crm_payload
       end
     end
   end

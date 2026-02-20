@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "rails_helper"
 
 RSpec.describe CrmSynchronisation, type: :model do
@@ -39,33 +41,41 @@ RSpec.describe CrmSynchronisation, type: :model do
       expect(sync.errors[:resource_id]).to be_present
     end
 
-    it "enforces crm_id uniqueness but allows nil" do
-      # Unicité de crm_id (valeur non nulle)
+    it "enforces crm_id uniqueness scoped to crm_name and resource_type" do
       described_class.create!(
         resource: user,
         crm_name: "hubspot",
         crm_id: "dup-1"
       )
 
-      dup_val = described_class.new(
-        resource: company,
-        crm_name: "hubspot",
-        crm_id: "dup-1"
-      )
-      expect(dup_val).not_to be_valid
-      expect(dup_val.errors[:crm_id]).to be_present
-
-      # Nil est autorisé sur crm_id (avec des resources différentes)
+      # Same resource_type + same crm_name + same crm_id → invalid
       user2 = User.create!(
         email: "other@capsens.eu",
         full_name: "Autre",
         company: company
       )
+      dup_same_type = described_class.new(
+        resource: user2,
+        crm_name: "hubspot",
+        crm_id: "dup-1"
+      )
+      expect(dup_same_type).not_to be_valid
+      expect(dup_same_type.errors[:crm_id]).to be_present
+
+      # Different resource_type + same crm_name + same crm_id → valid
+      # (CRM object types have independent ID spaces)
+      diff_type = described_class.new(
+        resource: company,
+        crm_name: "hubspot",
+        crm_id: "dup-1"
+      )
+      expect(diff_type).to be_valid
+
+      # Nil is allowed for crm_id
       company2 = Company.create!(
         name: "OtherCo",
         domain: "other.tld"
       )
-
       a = described_class.new(
         resource: user2,
         crm_name: "hubspot",

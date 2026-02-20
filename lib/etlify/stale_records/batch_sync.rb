@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Etlify
   module StaleRecords
     # BatchSync: enqueue or perform sync for all stale records discovered by
@@ -31,27 +33,30 @@ module Etlify
       def initialize(models:, crm_name:, async:, batch_size:)
         @models     = models
         @crm_name   = crm_name&.to_sym
-        @async      = !!async
+        @async      = !!async # rubocop:disable Style/DoubleNegation
         @batch_size = Integer(batch_size)
       end
 
       def call
-        stats = {total: 0, per_model: {}, errors: 0}
+        stats = {total: 0, per_model: {}, errors: 0, deferred: 0}
 
         # Finder returns: { ModelClass => { crm_sym => relation(ids-only) } }
         Finder.call(models: @models, crm_name: @crm_name).each do |model, per_crm|
-          model_count  = 0
-          model_errors = 0
+          model_count    = 0
+          model_errors   = 0
+          model_deferred = 0
 
           per_crm.each do |crm, relation|
             processed = process_model(model, relation, crm_name: crm)
-            model_count  += processed[:count]
-            model_errors += processed[:errors]
+            model_count    += processed[:count]
+            model_errors   += processed[:errors]
+            model_deferred += processed[:deferred]
           end
 
           stats[:per_model][model.name] = model_count
-          stats[:total]  += model_count
-          stats[:errors] += model_errors
+          stats[:total]    += model_count
+          stats[:errors]   += model_errors
+          stats[:deferred] += model_deferred
         end
 
         stats
@@ -61,9 +66,10 @@ module Etlify
 
       # Process one model's stale relation (ids-only relation) for a given CRM.
       def process_model(model, relation, crm_name:)
-        count  = 0
-        errors = 0
-        pk     = model.primary_key.to_sym
+        count    = 0
+        errors   = 0
+        deferred = 0
+        pk       = model.primary_key.to_sym
         base_scope = model.unscoped.where(pk => relation)
 
         base_scope.in_batches(of: @batch_size) do |batch_rel|
@@ -80,14 +86,15 @@ module Etlify
               guard = conf[:guard]
               next if guard && !guard.call(rec)
 
-              service = Etlify::Synchronizer.call(rec, crm_name: crm_name)
+              result = Etlify::Synchronizer.call(rec, crm_name: crm_name)
               count += 1
-              errors += 1 if service == :error
+              errors += 1 if result == :error
+              deferred += 1 if result == :deferred
             end
           end
         end
 
-        {count: count, errors: errors}
+        {count: count, errors: errors, deferred: deferred}
       end
 
       # Enqueue one job per id without loading the records.

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # lib/etlify/model.rb
 module Etlify
   module Model
@@ -11,18 +13,16 @@ module Etlify
       class_attribute :etlify_crms, instance_writer: false, default: {}
 
       # Declare associations only for ActiveRecord models.
-      if defined?(ActiveRecord::Base) && self < ActiveRecord::Base
-        if respond_to?(:reflect_on_association) &&
-            !reflect_on_association(:crm_synchronisations)
-          has_many(
-            :crm_synchronisations,
-            -> { order(id: :asc) },
-            class_name: "CrmSynchronisation",
-            as: :resource,
-            dependent: :destroy,
-            inverse_of: :resource
-          )
-        end
+      if defined?(ActiveRecord::Base) && self < ActiveRecord::Base && respond_to?(:reflect_on_association) &&
+          !reflect_on_association(:crm_synchronisations)
+        has_many(
+          :crm_synchronisations,
+          -> { order(id: :asc) },
+          class_name: "CrmSynchronisation",
+          as: :resource,
+          dependent: :destroy,
+          inverse_of: :resource
+        )
       end
 
       # Install DSL and instance helpers for already-registered CRMs.
@@ -53,6 +53,7 @@ module Etlify
           crm_object_type:,
           id_property:,
           dependencies: [],
+          crm_dependencies: [],
           sync_if: ->(_r) { true },
           stale_scope: nil,
           job_class: nil
@@ -61,13 +62,21 @@ module Etlify
 
           reg = Etlify::CRM.fetch(crm_name)
 
+          parsed_crm_deps = Array(crm_dependencies).map(&:to_sym)
+
+          all_deps = Array(dependencies).map(&:to_sym)
+          parsed_crm_deps.each do |dep|
+            all_deps << dep unless all_deps.include?(dep)
+          end
+
           conf = {
             serializer: serializer,
             guard: sync_if,
             stale_scope: stale_scope,
             crm_object_type: crm_object_type,
             id_property: id_property,
-            dependencies: Array(dependencies).map(&:to_sym),
+            dependencies: all_deps,
+            crm_dependencies: parsed_crm_deps,
             adapter: reg.adapter,
             job_class: job_class || reg.options[:job_class],
           }
@@ -110,19 +119,19 @@ module Etlify
         end
 
         # Define filtered has_one only for AR models.
-        if defined?(ActiveRecord::Base) && klass < ActiveRecord::Base
-          assoc_name = :"#{crm_name}_crm_synchronisation"
-          if klass.respond_to?(:reflect_on_association) &&
-              !klass.reflect_on_association(assoc_name)
-            klass.has_one(
-              assoc_name,
-              -> { where(crm_name: crm_name.to_s) },
-              class_name: "CrmSynchronisation",
-              as: :resource,
-              dependent: :destroy,
-              inverse_of: :resource
-            )
-          end
+        return unless defined?(ActiveRecord::Base) && klass < ActiveRecord::Base
+
+        assoc_name = :"#{crm_name}_crm_synchronisation"
+        if klass.respond_to?(:reflect_on_association) &&
+            !klass.reflect_on_association(assoc_name)
+          klass.has_one(
+            assoc_name,
+            -> { where(crm_name: crm_name.to_s) },
+            class_name: "CrmSynchronisation",
+            as: :resource,
+            dependent: :destroy,
+            inverse_of: :resource
+          )
         end
       end
     end
@@ -201,9 +210,9 @@ module Etlify
     end
 
     def raise_unless_crm_is_configured(crm_name)
-      unless self.class.etlify_crms && self.class.etlify_crms[crm_name.to_sym]
-        raise ArgumentError, "crm not configured for #{crm_name}"
-      end
+      return if self.class.etlify_crms && self.class.etlify_crms[crm_name.to_sym]
+
+      raise ArgumentError, "crm not configured for #{crm_name}"
     end
   end
 end

@@ -11,6 +11,7 @@ require_relative "etlify/digest"
 require_relative "etlify/crm"
 require_relative "etlify/model"
 require_relative "etlify/synchronizer"
+require_relative "etlify/dependency_resolver"
 require_relative "etlify/deleter"
 require_relative "etlify/stale_records/finder"
 require_relative "etlify/stale_records/batch_sync"
@@ -20,6 +21,7 @@ require_relative "etlify/serializers/base_serializer"
 require_relative "generators/etlify/install/install_generator"
 require_relative "generators/etlify/migration/migration_generator"
 require_relative "generators/etlify/serializer/serializer_generator"
+require_relative "generators/etlify/sync_dependencies_migration/sync_dependencies_migration_generator"
 
 module Etlify
   class << self
@@ -33,6 +35,7 @@ module Etlify
   end
 end
 
+require_relative "../app/models/etlify/sync_dependency"
 require_relative "../app/jobs/etlify/sync_job"
 require_relative "etlify/railtie"
 require_relative "etlify/engine"

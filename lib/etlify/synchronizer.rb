@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Etlify
   class Synchronizer
     attr_accessor(
@@ -20,9 +22,9 @@ module Etlify
       @conf     = resource.class.etlify_crms.fetch(@crm_name)
       @adapter  = @conf[:adapter]
 
-      unless @adapter.is_a?(Object) && @adapter.respond_to?(:upsert!)
-        raise ArgumentError, "Adapter must be an instance responding to upsert!"
-      end
+      return if @adapter.is_a?(Object) && @adapter.respond_to?(:upsert!)
+
+      raise ArgumentError, "Adapter must be an instance responding to upsert!"
     end
 
     def call
@@ -39,6 +41,10 @@ module Etlify
         return :skipped
       end
 
+      # Check CRM dependencies before acquiring the lock.
+      dep_result = check_crm_dependencies
+      return dep_result if dep_result
+
       resource.with_lock do
         if sync_line.stale?(digest)
           crm_id = adapter.upsert!(
@@ -54,9 +60,12 @@ module Etlify
             last_synced_at: Time.current,
             last_error: nil
           )
+
+          after_sync_success
           :synced
         else
           sync_line.update!(last_synced_at: Time.current)
+          after_sync_success
           :not_modified
         end
       end
@@ -80,6 +89,30 @@ module Etlify
     # If you still have has_one, this keeps working but won't handle multi-CRM.
     def sync_line
       resource.crm_synchronisations.find_or_initialize_by(crm_name: crm_name)
+    end
+
+    # Check CRM dependencies. Returns :deferred if any parent is missing,
+    # nil otherwise (proceed with sync).
+    def check_crm_dependencies
+      crm_deps = conf[:crm_dependencies] || []
+      return nil if crm_deps.empty?
+
+      dep_check = DependencyResolver.check(resource, crm_name: crm_name)
+      return nil if dep_check[:satisfied]
+
+      DependencyResolver.register_pending!(
+        resource,
+        crm_name: crm_name,
+        missing_parents: dep_check[:missing_parents]
+      )
+      :deferred
+    end
+
+    # After a successful sync (synced or not_modified), clean up child
+    # dependency records and resolve any dependents waiting on this resource.
+    def after_sync_success
+      DependencyResolver.cleanup_for_child!(resource, crm_name: crm_name)
+      DependencyResolver.resolve_dependents!(resource, crm_name: crm_name)
     end
   end
 end

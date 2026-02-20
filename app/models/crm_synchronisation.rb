@@ -3,7 +3,7 @@ class CrmSynchronisation < ActiveRecord::Base
 
   belongs_to :resource, polymorphic: true
 
-  validates :crm_id, uniqueness: true, allow_nil: true
+  validates :crm_id, allow_nil: true, uniqueness: {scope: [:crm_name, :resource_type]}
   validates :resource_type, presence: true
   validates :resource_id, presence: true
   validates :resource_id, uniqueness: {scope: [:resource_type, :crm_name]}

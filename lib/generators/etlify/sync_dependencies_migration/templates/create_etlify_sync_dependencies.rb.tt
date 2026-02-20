@@ -1,0 +1,36 @@
+class <%= file_name.camelize %> < ActiveRecord::Migration[<%= ActiveRecord::VERSION::MAJOR %>.<%= ActiveRecord::VERSION::MINOR %>]
+  def change
+    create_table :etlify_sync_dependencies do |t|
+      t.string  :resource_type,        null: false
+      t.bigint  :resource_id,          null: false
+      t.string  :parent_resource_type, null: false
+      t.bigint  :parent_resource_id,   null: false
+      t.string  :crm_name,             null: false
+
+      t.timestamps
+    end
+
+    add_index(
+      :etlify_sync_dependencies,
+      [:crm_name, :parent_resource_type, :parent_resource_id],
+      name: "idx_sync_deps_on_parent"
+    )
+    add_index(
+      :etlify_sync_dependencies,
+      [:crm_name, :resource_type, :resource_id],
+      name: "idx_sync_deps_on_child"
+    )
+    add_index(
+      :etlify_sync_dependencies,
+      [
+        :crm_name,
+        :resource_type,
+        :resource_id,
+        :parent_resource_type,
+        :parent_resource_id,
+      ],
+      unique: true,
+      name: "idx_sync_deps_unique"
+    )
+  end
+end
