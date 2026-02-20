@@ -90,9 +90,17 @@ module Etlify
       rescue
         []
       end
-      db_tasks = %w[
-        db:create db:drop db:environment:set db:prepare db:migrate db:rollback
-        db:schema:load db:structure:load db:setup db:reset
+      db_tasks = [
+        "db:create",
+        "db:drop",
+        "db:environment:set",
+        "db:prepare",
+        "db:migrate",
+        "db:rollback",
+        "db:schema:load",
+        "db:structure:load",
+        "db:setup",
+        "db:reset",
       ]
       (tasks & db_tasks).any?
     end
