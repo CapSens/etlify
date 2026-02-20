@@ -42,7 +42,7 @@ module Etlify
         # ---------- Model discovery / filtering ----------
 
         def etlified_models(crm_name: nil)
-          ActiveRecord::Base.descendants.select do |m|
+          models = ActiveRecord::Base.descendants.select do |m|
             next false unless m.respond_to?(:table_exists?) && m.table_exists?
             next false unless m.respond_to?(:etlify_crms) && m.etlify_crms.present?
 
@@ -51,6 +51,15 @@ module Etlify
             else
               m.etlify_crms.any?
             end
+          end
+
+          # Skip STI subclasses when the base class is already present.
+          # class_attribute :etlify_crms is inherited by subclasses, causing
+          # the Finder to discover them. Building queries for STI subclasses
+          # fails because Rails injects a WHERE type = '...' clause on a
+          # subquery alias that only exposes the id column.
+          models.reject do |m|
+            m.superclass.in?(models) && m.table_name == m.superclass.table_name
           end
         end
 
