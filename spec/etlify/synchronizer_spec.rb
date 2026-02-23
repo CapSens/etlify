@@ -190,7 +190,7 @@ RSpec.describe Etlify::Synchronizer do
   end
 
   context "sync_dependencies legacy fallback" do
-    %i[hubspot airtable].each do |crm|
+    [:hubspot, :airtable].each do |crm|
       context "with #{crm} CRM" do
         let(:legacy_id_method) { :"#{crm}_id" }
 
@@ -347,6 +347,33 @@ RSpec.describe Etlify::Synchronizer do
         dependent_type: "User",
         dependent_id: user.id
       ).count).to eq(0)
+    end
+  end
+
+  context "when sync_dependencies is configured but etlify_pending_syncs table is missing" do
+    it "raises a RuntimeError with an actionable message" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            sync_dependencies: [:company],
+          },
+        }
+      )
+
+      allow(ActiveRecord::Base.connection)
+        .to receive(:data_source_exists?)
+        .with("etlify_pending_syncs")
+        .and_return(false)
+
+      expect do
+        described_class.new(user, crm_name: :hubspot)
+      end.to raise_error(
+        RuntimeError,
+        /Missing table "etlify_pending_syncs".*User.*rails g etlify:migration/
+      )
     end
   end
 
