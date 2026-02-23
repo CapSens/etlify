@@ -17,6 +17,12 @@ module Etlify
       end
     end
 
+    initializer "etlify.check_pending_syncs_table" do
+      ActiveSupport.on_load(:active_record) do
+        Etlify::Engine.check_pending_syncs_table_safely
+      end
+    end
+
     # --- Schema check ---------------------------------------------------------
     def self.check_crm_name_column_safely
       return if skip_schema_checks?
@@ -42,7 +48,42 @@ module Etlify
       end
     end
 
+    # --- Pending syncs table check -------------------------------------------
+    def self.check_pending_syncs_table_safely
+      return if skip_schema_checks?
+
+      begin
+        connection = ActiveRecord::Base.connection
+        return if connection.data_source_exists?("etlify_pending_syncs")
+
+        # Only warn if at least one model uses sync_dependencies.
+        has_sync_deps = Etlify::Model.__included_klasses__.any? do |klass|
+          next false unless klass.respond_to?(:etlify_crms) && klass.etlify_crms.present?
+
+          klass.etlify_crms.values.any? { |conf| conf[:sync_dependencies]&.any? }
+        end
+
+        warn_missing_pending_syncs_table if has_sync_deps
+      rescue ActiveRecord::NoDatabaseError, ActiveRecord::StatementInvalid => e
+        log_debug("Skip check: DB not ready (#{e.class}: #{e.message})")
+      end
+    end
+
     # --- Helpers --------------------------------------------------------------
+    def self.warn_missing_pending_syncs_table
+      msg =
+        'Missing table "etlify_pending_syncs". ' \
+        "Please run: rails g etlify:migration create_etlify_pending_syncs && rails db:migrate"
+
+      Rails.logger.warn("[Etlify] #{msg}") if defined?(Rails.logger)
+
+      if defined?(ActiveSupport::Deprecation::DEFAULT)
+        ActiveSupport::Deprecation::DEFAULT.warn("[Etlify] #{msg}")
+      else
+        warn("[Etlify] #{msg}")
+      end
+    end
+
     def self.warn_missing_column
       msg =
         'Missing column "crm_name" on table "crm_synchronisations". ' \
