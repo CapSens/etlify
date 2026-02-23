@@ -165,7 +165,7 @@ end
 
 **How it works:**
 
-1. Before syncing, Etlify checks each `sync_dependency` association for a `crm_id` in its `CrmSynchronisation` row.
+1. Before syncing, Etlify checks each `sync_dependency` association for a `crm_id`. It first looks in the `CrmSynchronisation` table (etlified models), then falls back to a direct `#{crm_name}_id` column on the model (legacy models, e.g. `airtable_id`).
 2. If any dependency is missing a `crm_id`, the sync is **buffered**: an `Etlify::PendingSync` row is created and the dependency is enqueued for sync. The method returns `:buffered`.
 3. Once the dependency is successfully synced (`:synced`), Etlify **flushes** all its pending dependents by re-enqueuing them via `crm_sync!`.
 

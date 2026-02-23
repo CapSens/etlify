@@ -183,6 +183,50 @@ RSpec.describe Etlify::Synchronizer do
     end
   end
 
+  context "sync_dependencies legacy fallback" do
+    %i[hubspot airtable].each do |crm|
+      context "with #{crm} CRM" do
+        let(:legacy_id_method) { :"#{crm}_id" }
+
+        it "proceeds when dependency has a direct #{crm}_id column", :aggregate_failures do
+          allow_any_instance_of(Company).to receive(legacy_id_method).and_return("legacy-123")
+
+          allow(User).to receive(:etlify_crms).and_return(
+            {
+              crm => {
+                adapter: Etlify::Adapters::NullAdapter.new,
+                id_property: "id",
+                crm_object_type: "contacts",
+                sync_dependencies: [:company],
+              },
+            }
+          )
+
+          result = described_class.call(user, crm_name: crm)
+          expect(result).to eq(:synced)
+        end
+
+        it "buffers when dependency has a blank #{crm}_id column", :aggregate_failures do
+          allow_any_instance_of(Company).to receive(legacy_id_method).and_return(nil)
+
+          allow(User).to receive(:etlify_crms).and_return(
+            {
+              crm => {
+                adapter: Etlify::Adapters::NullAdapter.new,
+                id_property: "id",
+                crm_object_type: "contacts",
+                sync_dependencies: [:company],
+              },
+            }
+          )
+
+          result = described_class.call(user, crm_name: crm)
+          expect(result).to eq(:buffered)
+        end
+      end
+    end
+  end
+
   context "sync_dependencies flush" do
     it "re-enqueues dependents after a successful sync", :aggregate_failures do
       # Setup: company has a pending sync for user

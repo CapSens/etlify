@@ -103,15 +103,25 @@ module Etlify
       sync_deps.filter_map do |assoc_name|
         dep = resource.public_send(assoc_name)
         next unless dep
+        next if dependency_has_crm_id?(dep)
 
-        dep_sync = CrmSynchronisation.find_by(
-          resource_type: dep.class.name,
-          resource_id: dep.id,
-          crm_name: crm_name.to_s
-        )
-
-        dep if dep_sync.nil? || dep_sync.crm_id.blank?
+        dep
       end
+    end
+
+    # Check if a dependency already has a CRM id, either via CrmSynchronisation
+    # (etlified models) or via a direct column like `airtable_id` (legacy models).
+    def dependency_has_crm_id?(dep)
+      dep_sync = CrmSynchronisation.find_by(
+        resource_type: dep.class.name,
+        resource_id: dep.id,
+        crm_name: crm_name.to_s
+      )
+      return true if dep_sync&.crm_id.present?
+
+      # Fallback: check for a direct `#{crm_name}_id` column (legacy models).
+      legacy_method = :"#{crm_name}_id"
+      dep.respond_to?(legacy_method) && dep.send(legacy_method).present?
     end
 
     # Create PendingSync rows for each missing dependency and enqueue the
