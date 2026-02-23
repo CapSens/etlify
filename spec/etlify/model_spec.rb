@@ -100,6 +100,7 @@ RSpec.describe Etlify::Model do
         crm_object_type: :contact,
         id_property: :external_id,
         dependencies: %w[company owner],
+        sync_dependencies: %w[company],
         sync_if: ->(r) { r.respond_to?(:active?) ? r.active? : true },
         job_class: "OverrideJob"
       )
@@ -110,8 +111,23 @@ RSpec.describe Etlify::Model do
       expect(conf[:crm_object_type]).to eq(:contact)
       expect(conf[:id_property]).to eq(:external_id)
       expect(conf[:dependencies]).to eq(%i[company owner])
+      expect(conf[:sync_dependencies]).to eq(%i[company])
       expect(conf[:adapter]).to eq(dummy_adapter)
       expect(conf[:job_class]).to eq("OverrideJob")
+    end
+
+    it "defaults sync_dependencies to an empty array when not provided" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+
+      klass.hubspot_etlified_with(
+        serializer: dummy_serializer,
+        crm_object_type: :contact,
+        id_property: :external_id
+      )
+
+      conf = klass.etlify_crms[:hubspot]
+      expect(conf[:sync_dependencies]).to eq([])
     end
 
     it "defaults sync_if to a proc returning true when not provided" do
