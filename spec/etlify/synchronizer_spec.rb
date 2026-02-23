@@ -1,5 +1,11 @@
 require "rails_helper"
 
+class FailingAdapter
+  def upsert!(payload:, id_property:, object_type:)
+    raise "boom"
+  end
+end
+
 RSpec.describe Etlify::Synchronizer do
   let(:company) { Company.create!(name: "CapSens", domain: "capsens.eu") }
   let(:user) do
@@ -345,22 +351,18 @@ RSpec.describe Etlify::Synchronizer do
   end
 
   context "when adapter raises" do
-    class FailingAdapter
-      def upsert!(payload:, id_property:, object_type:)
-        raise "boom"
-      end
+    let(:failing_crms) do
+      {
+        hubspot: {
+          adapter: FailingAdapter.new,
+          id_property: "id",
+          crm_object_type: "contacts",
+        },
+      }
     end
 
     it "records last_error and returns :error", :aggregate_failures do
-      allow(User).to receive(:etlify_crms).and_return(
-        {
-          hubspot: {
-            adapter: FailingAdapter.new,
-            id_property: "id",
-            crm_object_type: "contacts",
-          },
-        }
-      )
+      allow(User).to receive(:etlify_crms).and_return(failing_crms)
 
       result = described_class.call(user, crm_name: :hubspot)
       line = sync_lines_for(user).find_by(crm_name: "hubspot")
@@ -369,6 +371,68 @@ RSpec.describe Etlify::Synchronizer do
       expect(line.last_error).to eq("boom")
       expect(line.last_synced_at).to be_nil
       expect(line.last_digest).to be_nil
+    end
+
+    it "increments error_count by 1 on each failure", :aggregate_failures do
+      allow(User).to receive(:etlify_crms).and_return(failing_crms)
+
+      described_class.call(user, crm_name: :hubspot)
+      line = sync_lines_for(user).find_by(crm_name: "hubspot")
+      expect(line.error_count).to eq(1)
+
+      described_class.call(user, crm_name: :hubspot)
+      line.reload
+      expect(line.error_count).to eq(2)
+
+      described_class.call(user, crm_name: :hubspot)
+      line.reload
+      expect(line.error_count).to eq(3)
+    end
+  end
+
+  context "error_count reset on success" do
+    it "resets error_count to 0 after a successful sync", :aggregate_failures do
+      # Pre-seed a sync line with errors
+      CrmSynchronisation.create!(
+        crm_name: "hubspot",
+        resource: user,
+        error_count: 3,
+        last_error: "previous failure"
+      )
+
+      result = described_class.call(user, crm_name: :hubspot)
+      expect(result).to eq(:synced)
+
+      line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+      expect(line.error_count).to eq(0)
+      expect(line.last_error).to be_nil
+    end
+
+    it "resets error_count to 0 when guard returns false" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            guard: ->(_r) { false },
+          },
+        }
+      )
+
+      CrmSynchronisation.create!(
+        crm_name: "hubspot",
+        resource: user,
+        error_count: 2,
+        last_error: "old error"
+      )
+
+      result = described_class.call(user, crm_name: :hubspot)
+      expect(result).to eq(:skipped)
+
+      line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+      expect(line.error_count).to eq(0)
+      expect(line.last_error).to be_nil
     end
   end
 end

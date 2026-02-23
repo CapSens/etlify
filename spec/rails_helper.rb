@@ -67,6 +67,7 @@ RSpec.configure do |config|
         t.text    :last_error
         t.string  :resource_type, null: false
         t.integer :resource_id, null: false
+        t.integer :error_count, default: 0, null: false
         t.timestamps
       end
 
@@ -93,11 +94,11 @@ RSpec.configure do |config|
       end
     end
 
-    class Company < ApplicationRecord
+    class Company < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
       has_many :crm_synchronisations, as: :resource, dependent: :destroy
     end
 
-    class User < ApplicationRecord
+    class User < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
       belongs_to :company, optional: true
       has_many :crm_synchronisations, as: :resource, dependent: :destroy
 

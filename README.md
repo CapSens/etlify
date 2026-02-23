@@ -83,7 +83,10 @@ Etlify.configure do |config|
     adapter: Etlify::Adapters::HubspotV3Adapter.new(
       access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
     ),
-    options: {job_class: "Etlify::SyncObjectWorker"}
+    options: {
+      job_class: "Etlify::SyncObjectWorker",
+      max_sync_errors: 5
+    }
   )
   # will provide DSL below for models
   # hubspot_etlified_with(...)
@@ -144,6 +147,45 @@ class Trading::Operation < ApplicationRecord
   )
 end
 ```
+
+#### Limiting automatic retries with `max_sync_errors`
+
+When a record fails to sync repeatedly (CRM misconfigured, server error, etc.),
+Etlify increments an `error_count` on its `CrmSynchronisation` row. Once the
+count reaches the configured limit, the record is **excluded** from
+`StaleRecords::Finder` automatic retries.
+
+The default limit is **3**. You can change it globally or per CRM:
+
+```ruby
+# Global default (config/initializers/etlify.rb)
+Etlify.configure do |config|
+  config.max_sync_errors = 10
+end
+
+# Per-CRM override (takes precedence over global)
+Etlify::CRM.register(
+  :hubspot,
+  adapter: Etlify::Adapters::HubspotV3Adapter.new(
+    access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
+  ),
+  options: { max_sync_errors: 5 }
+)
+```
+
+To re-enable sync after fixing the root cause:
+
+```ruby
+sync_line = CrmSynchronisation.find_by(
+  resource: user, crm_name: "hubspot"
+)
+sync_line.reset_error_count!
+```
+
+> **Upgrading?** Run `rails g etlify:add_error_count && rails db:migrate`
+> to add the `error_count` column.
+
+---
 
 #### Ordering sync with `sync_dependencies`
 

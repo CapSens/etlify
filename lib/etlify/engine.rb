@@ -10,10 +10,17 @@ module Etlify
   class Engine < ::Rails::Engine
     isolate_namespace Etlify
 
-    initializer "etlify.check_crm_name_column" do
+    # Columns that must exist on crm_synchronisations, with their fix command.
+    REQUIRED_COLUMNS = {
+      crm_name: "rails g migration AddCrmNameToCrmSynchronisations" \
+                " crm_name:string:index && rails db:migrate",
+      error_count: "rails g etlify:add_error_count && rails db:migrate",
+    }.freeze
+
+    initializer "etlify.check_schema" do
       # Defer until AR is loaded to avoid touching the connection too early.
       ActiveSupport.on_load(:active_record) do
-        Etlify::Engine.check_crm_name_column_safely
+        Etlify::Engine.check_schema_safely
       end
     end
 
@@ -24,25 +31,25 @@ module Etlify
     end
 
     # --- Schema check ---------------------------------------------------------
-    def self.check_crm_name_column_safely
+    def self.check_schema_safely
       return if skip_schema_checks?
 
       begin
         connection = ActiveRecord::Base.connection
         table = "crm_synchronisations"
-        col = :crm_name
 
         unless connection.data_source_exists?(table)
           log_debug('Skip check: table "crm_synchronisations" does not exist.')
           return
         end
 
-        if connection.column_exists?(table, col)
-          log_debug('Column "crm_name" found on "crm_synchronisations".')
-          return
+        REQUIRED_COLUMNS.each do |col, fix_command|
+          if connection.column_exists?(table, col)
+            log_debug("Column \"#{col}\" found on \"crm_synchronisations\".")
+          else
+            warn_missing_column(col, fix_command)
+          end
         end
-
-        warn_missing_column
       rescue ActiveRecord::NoDatabaseError, ActiveRecord::StatementInvalid => e
         log_debug("Skip check: DB not ready (#{e.class}: #{e.message})")
       end
@@ -84,11 +91,10 @@ module Etlify
       end
     end
 
-    def self.warn_missing_column
+    def self.warn_missing_column(column, fix_command)
       msg =
-        'Missing column "crm_name" on table "crm_synchronisations". ' \
-        "Please run: rails g migration " \
-        "AddCrmNameToCrmSynchronisations crm_name:string:index && rails db:migrate"
+        "Missing column \"#{column}\" on table \"crm_synchronisations\". " \
+        "Please run: #{fix_command}"
 
       Rails.logger.warn("[Etlify] #{msg}") if defined?(Rails.logger)
 
@@ -131,9 +137,17 @@ module Etlify
       rescue
         []
       end
-      db_tasks = %w[
-        db:create db:drop db:environment:set db:prepare db:migrate db:rollback
-        db:schema:load db:structure:load db:setup db:reset
+      db_tasks = [
+        "db:create",
+        "db:drop",
+        "db:environment:set",
+        "db:prepare",
+        "db:migrate",
+        "db:rollback",
+        "db:schema:load",
+        "db:structure:load",
+        "db:setup",
+        "db:reset",
       ]
       (tasks & db_tasks).any?
     end

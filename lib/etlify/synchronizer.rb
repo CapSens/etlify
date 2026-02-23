@@ -32,8 +32,12 @@ module Etlify
         # Optionally touch last_synced_at to avoid reprocessing loops.
         # Swallow errors here to keep behavior non-fatal.
         begin
-          sync_line.update!(last_synced_at: Time.current, last_error: nil)
-        rescue StandardError
+          sync_line.update!(
+            last_synced_at: Time.current,
+            last_error: nil,
+            error_count: 0
+          )
+        rescue
           # no-op
         end
         return :skipped
@@ -57,7 +61,8 @@ module Etlify
             crm_id: crm_id.presence || sync_line.crm_id,
             last_digest: digest,
             last_synced_at: Time.current,
-            last_error: nil
+            last_error: nil,
+            error_count: 0
           )
 
           :synced
@@ -73,7 +78,10 @@ module Etlify
 
       result
     rescue => e
-      sync_line.update!(last_error: e.message)
+      sync_line.update!(
+        last_error: e.message,
+        error_count: sync_line.error_count.to_i + 1
+      )
       :error
     end
 

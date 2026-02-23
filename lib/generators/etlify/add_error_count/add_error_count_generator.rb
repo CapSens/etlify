@@ -3,22 +3,17 @@ require "rails/generators/active_record"
 
 module Etlify
   module Generators
-    class MigrationGenerator < ActiveRecord::Generators::Base
-      TEMPLATES = {
-        "create_crm_synchronisations" => "create_crm_synchronisations.rb.tt",
-        "create_etlify_pending_syncs" => "create_etlify_pending_syncs.rb.tt",
-      }.freeze
+    class AddErrorCountGenerator < ActiveRecord::Generators::Base
+      DEFAULT_MIGRATION_FILENAME = "add_error_count_to_crm_synchronisations"
 
       source_root File.expand_path("templates", __dir__)
 
       argument :name, type: :string,
-                      default: TEMPLATES.keys.first
+                      default: DEFAULT_MIGRATION_FILENAME
 
       def copy_migration
-        template_name = TEMPLATES.fetch(file_name, TEMPLATES.values.first)
-
         migration_template(
-          template_name,
+          "add_error_count_to_crm_synchronisations.rb.tt",
           "db/migrate/#{file_name}.rb"
         )
       end
@@ -26,7 +21,7 @@ module Etlify
       private
 
       def file_name
-        (name.presence || TEMPLATES.keys.first).underscore
+        (name.presence || DEFAULT_MIGRATION_FILENAME).underscore
       end
 
       def self.next_migration_number(_dirname) # rubocop:disable Lint/IneffectiveAccessModifier
