@@ -47,12 +47,12 @@ RSpec.describe Etlify::StaleRecords::Finder do
       end
 
       unless ActiveRecord::Base.connection
-                 .column_exists?(:users, :avatarable_type)
+                               .column_exists?(:users, :avatarable_type)
         add_column :users, :avatarable_type, :string
       end
 
       unless ActiveRecord::Base.connection
-                 .column_exists?(:users, :avatarable_id)
+                               .column_exists?(:users, :avatarable_id)
         add_column :users, :avatarable_id, :integer
       end
 
@@ -84,6 +84,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
       create_table :subscriptions, force: true do |t|
         # FK lives on source table -> references profiles.id
         t.integer :users_profile_id
+        t.string :type # STI column
         t.timestamps null: true
       end
     end
@@ -149,6 +150,14 @@ RSpec.describe Etlify::StaleRecords::Finder do
       klass.belongs_to :followee, class_name: "User", optional: false
     end
 
+    # STI subclass for testing Finder with Single Table Inheritance
+    Object.send(:remove_const, "LendingSubscription") \
+      if Object.const_defined?("LendingSubscription")
+    Object.const_set(
+      "LendingSubscription",
+      Class.new(Subscription)
+    )
+
     Profile.class_eval do
       has_many :subscriptions,
                class_name: "Subscription",
@@ -170,8 +179,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
       has_many :poly_projects, through: :linkages, source: :project
       has_many :subscriptions, through: :profile
       has_many :follows, class_name: "Follow",
-                       foreign_key: "follower_id",
-                       dependent: :destroy
+                         foreign_key: "follower_id",
+                         dependent: :destroy
       has_many :followees, through: :follows, source: :followee
     end
   end
@@ -207,15 +216,15 @@ RSpec.describe Etlify::StaleRecords::Finder do
           id_property: "id",
           crm_object_type: "contacts",
           dependencies: [
-            :company, :notes, :profile, :projects, :uploads, :activities
-          ]
+            :company, :notes, :profile, :projects, :uploads, :activities,
+          ],
         },
         salesforce: {
           adapter: Etlify::Adapters::NullAdapter.new,
           id_property: "Id",
           crm_object_type: "Lead",
-          dependencies: [:company]
-        }
+          dependencies: [:company],
+        },
       }
     )
   end
@@ -242,6 +251,48 @@ RSpec.describe Etlify::StaleRecords::Finder do
     it "when models: is given, restricts to that subset" do
       result = described_class.call(models: [User])
       expect(result.keys).to eq([User])
+    end
+
+    it "skips STI subclasses that only inherited etlify_crms from the base class" do
+      config = {
+        hubspot: {
+          adapter: Etlify::Adapters::NullAdapter.new,
+          id_property: "id",
+          crm_object_type: "deals",
+          dependencies: [],
+        },
+      }
+      allow(Subscription).to receive(:etlify_crms).and_return(config)
+      allow(LendingSubscription).to receive(:etlify_crms).and_return(config)
+
+      result = described_class.call
+      expect(result.keys).to include(Subscription)
+      expect(result.keys).not_to include(LendingSubscription)
+    end
+
+    it "processes STI subclasses that have their own etlify_crms config" do
+      config = {
+        hubspot: {
+          adapter: Etlify::Adapters::NullAdapter.new,
+          id_property: "id",
+          crm_object_type: "deals",
+          dependencies: [],
+        },
+      }
+      allow(LendingSubscription).to receive(:etlify_crms).and_return(config)
+
+      Subscription.create!(users_profile_id: nil, type: "LendingSubscription")
+      Subscription.create!(users_profile_id: nil, type: nil)
+
+      result = described_class.call
+      expect(result.keys).to include(LendingSubscription)
+
+      ids = result[LendingSubscription][:hubspot].pluck(:id)
+      lending_ids = Subscription.where(type: "LendingSubscription").pluck(:id)
+      other_ids = Subscription.where(type: nil).pluck(:id)
+
+      expect(ids).to match_array(lending_ids)
+      expect(ids).not_to include(*other_ids)
     end
   end
 
@@ -339,8 +390,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: []
-          }
+            dependencies: [],
+          },
         }
       )
       user = User.create!(email: "x@x.x", updated_at: now)
@@ -413,8 +464,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: [:activities]
-          }
+            dependencies: [:activities],
+          },
         }
       )
       create_sync!(user, crm: :hubspot, last_synced_at: now + 1)
@@ -437,8 +488,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: [:activities]
-          }
+            dependencies: [:activities],
+          },
         }
       )
       create_sync!(user, crm: :hubspot, last_synced_at: now + 5)
@@ -452,8 +503,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: [:poly_projects]
-          }
+            dependencies: [:poly_projects],
+          },
         }
       )
 
@@ -476,8 +527,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
               adapter: Etlify::Adapters::NullAdapter.new,
               id_property: "id",
               crm_object_type: "contacts",
-              dependencies: [:subscriptions]
-            }
+              dependencies: [:subscriptions],
+            },
           }
         )
 
@@ -507,8 +558,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: [:avatarable]
-          }
+            dependencies: [:avatarable],
+          },
         }
       )
 
@@ -534,8 +585,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: [:avatarable]
-          }
+            dependencies: [:avatarable],
+          },
         }
       )
       user = User.create!(email: "q@x.x")
@@ -554,8 +605,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: [:tags]
-          }
+            dependencies: [:tags],
+          },
         }
       )
       user = User.create!(email: "habtm@x.x", updated_at: now)
@@ -582,8 +633,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             id_property: "id",
             crm_object_type: "contacts",
             # The dependency below triggers a users->users self-join
-            dependencies: [:followees]
-          }
+            dependencies: [:followees],
+          },
         }
       )
 
@@ -640,41 +691,43 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
       Object.send(:remove_const, "SuitabilityQuestionnaire") \
         if Object.const_defined?("SuitabilityQuestionnaire")
-      class SuitabilityQuestionnaire < ApplicationRecord
+      klass = Class.new(ApplicationRecord) do
         self.table_name = "capsens_suitability_questionnaire_questionnaires"
       end
+      Object.const_set("SuitabilityQuestionnaire", klass)
 
       Object.send(:remove_const, "ProfilesSuitabilityQuestionnaire") \
         if Object.const_defined?("ProfilesSuitabilityQuestionnaire")
-      class ProfilesSuitabilityQuestionnaire < ApplicationRecord
+      klass = Class.new(ApplicationRecord) do
         self.table_name = "users_profiles_suitability_questionnaires"
 
         belongs_to :profile,
-                  class_name: "Profile",
-                  foreign_key: "users_profile_id",
-                  optional: false
+                   class_name: "Profile",
+                   foreign_key: "users_profile_id",
+                   optional: false
         belongs_to :suitability_questionnaire,
-                  class_name: "SuitabilityQuestionnaire",
-                  optional: false
+                   class_name: "SuitabilityQuestionnaire",
+                   optional: false
       end
+      Object.const_set("ProfilesSuitabilityQuestionnaire", klass)
 
       # === Missing associations on Profile / User =========================
 
       Profile.class_eval do
         has_many :profiles_suitability_questionnaires,
-                class_name: "ProfilesSuitabilityQuestionnaire",
-                foreign_key: "users_profile_id",
-                dependent: :destroy
+                 class_name: "ProfilesSuitabilityQuestionnaire",
+                 foreign_key: "users_profile_id",
+                 dependent: :destroy
 
         has_many :suitability_questionnaires,
-                through: :profiles_suitability_questionnaires,
-                source: :suitability_questionnaire
+                 through: :profiles_suitability_questionnaires,
+                 source: :suitability_questionnaire
       end
 
       User.class_eval do
         has_many :suitability_questionnaires,
-                through: :profile,
-                source: :suitability_questionnaires
+                 through: :profile,
+                 source: :suitability_questionnaires
       end
     end
 
@@ -685,8 +738,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: [:suitability_questionnaires]
-          }
+            dependencies: [:suitability_questionnaires],
+          },
         }
       )
 
@@ -742,8 +795,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: [:notes, :profile]
-          }
+            dependencies: [:notes, :profile],
+          },
         }
       )
       relation = described_class.call(crm_name: :hubspot)[User][:hubspot]
@@ -784,14 +837,14 @@ RSpec.describe Etlify::StaleRecords::Finder do
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "id",
             crm_object_type: "contacts",
-            dependencies: [:notes]
+            dependencies: [:notes],
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
             id_property: "Id",
             crm_object_type: "Lead",
-            dependencies: [:company]
-          }
+            dependencies: [:company],
+          },
         }
       )
       user = User.create!(email: "b@x.x")
@@ -811,7 +864,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
   describe "empty and absent CRM cases" do
     it "omits models not configured for targeted crm_name" do
       allow(User).to receive(:etlify_crms).and_return(
-        { hubspot: User.etlify_crms[:hubspot] }
+        {hubspot: User.etlify_crms[:hubspot]}
       )
       results = described_class.call(crm_name: :salesforce)
       expect(results).to eq({})
@@ -850,7 +903,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: User.etlify_crms[:hubspot].merge(
             dependencies: [:does_not_exist]
-          )
+          ),
         }
       )
       user = User.create!(email: "u@x.x", updated_at: now)
@@ -893,8 +946,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
               adapter: Etlify::Adapters::NullAdapter.new,
               id_property: "id",
               crm_object_type: "contacts",
-              dependencies: []
-            }
+              dependencies: [],
+            },
           }
         end
       end
@@ -982,8 +1035,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [],
-            stale_scope: -> { where("email LIKE ?", "%market%") }
-          }
+            stale_scope: -> { where("email LIKE ?", "%market%") },
+          },
         }
       )
 
@@ -1003,8 +1056,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [],
-            stale_scope: nil
-          }
+            stale_scope: nil,
+          },
         }
       )
 
@@ -1023,8 +1076,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
             id_property: "id",
             crm_object_type: "contacts",
             dependencies: [],
-            stale_scope: -> { where("email LIKE ?", "%market%") }
-          }
+            stale_scope: -> { where("email LIKE ?", "%market%") },
+          },
         }
       )
 
@@ -1043,6 +1096,63 @@ RSpec.describe Etlify::StaleRecords::Finder do
       ids = user_ids_for(:hubspot)
       expect(ids).to include(marketplace_user.id)
       expect(ids).not_to include(other_user.id)
+    end
+  end
+
+  # -------------------- STI (Single Table Inheritance) ----------------------
+
+  describe "STI model support" do
+    before do
+      allow(LendingSubscription).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "deals",
+            dependencies: [],
+          },
+        }
+      )
+    end
+
+    def lending_ids_for(crm)
+      described_class
+        .call(models: [LendingSubscription], crm_name: crm)
+        .dig(LendingSubscription, crm)
+        &.pluck(:id) || []
+    end
+
+    it "does not crash on STI subclass (no PG::UndefinedColumn)" do
+      sub = LendingSubscription.create!(updated_at: now)
+      relation = described_class.call(
+        models: [LendingSubscription],
+        crm_name: :hubspot
+      ).dig(LendingSubscription, :hubspot)
+
+      expect(relation).to be_a(ActiveRecord::Relation)
+      expect { relation.to_a }.not_to raise_error
+      expect(relation.pluck(:id)).to include(sub.id)
+    end
+
+    it "returns only STI subclass records, not the whole table" do
+      base_record = Subscription.create!(updated_at: now)
+      lending = LendingSubscription.create!(updated_at: now)
+
+      ids = lending_ids_for(:hubspot)
+      expect(ids).to include(lending.id)
+      expect(ids).not_to include(base_record.id)
+    end
+
+    it "detects stale STI records correctly" do
+      sub = LendingSubscription.create!(updated_at: now)
+      create_sync!(sub, crm: :hubspot, last_synced_at: now + 10)
+
+      # Fresh => not stale
+      expect(lending_ids_for(:hubspot)).not_to include(sub.id)
+
+      # Update makes it stale
+      sub.update!(updated_at: now + 20)
+      expect(lending_ids_for(:hubspot)).to include(sub.id)
     end
   end
 end
