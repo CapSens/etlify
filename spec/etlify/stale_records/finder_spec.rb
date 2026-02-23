@@ -84,6 +84,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
       create_table :subscriptions, force: true do |t|
         # FK lives on source table -> references profiles.id
         t.integer :users_profile_id
+        t.string :type
         t.timestamps null: true
       end
     end
@@ -241,6 +242,58 @@ RSpec.describe Etlify::StaleRecords::Finder do
     it "when models: is given, restricts to that subset" do
       result = described_class.call(models: [User])
       expect(result.keys).to eq([User])
+    end
+
+    it "skips STI subclasses that only inherited etlify_crms from the base class" do
+      sti_sub = Class.new(Subscription) { self.table_name = "subscriptions" }
+      Object.const_set("LendingSubscription", sti_sub)
+
+      config = {
+        hubspot: {
+          adapter: Etlify::Adapters::NullAdapter.new,
+          id_property: "id",
+          crm_object_type: "deals",
+          dependencies: []
+        }
+      }
+      allow(Subscription).to receive(:etlify_crms).and_return(config)
+      allow(sti_sub).to receive(:etlify_crms).and_return(config)
+
+      result = described_class.call
+      expect(result.keys).to include(Subscription)
+      expect(result.keys).not_to include(sti_sub)
+    ensure
+      Object.send(:remove_const, "LendingSubscription") if Object.const_defined?("LendingSubscription")
+    end
+
+    it "processes STI subclasses that have their own etlify_crms config" do
+      sti_sub = Class.new(Subscription) { self.table_name = "subscriptions" }
+      Object.const_set("LendingSubscription", sti_sub)
+
+      config = {
+        hubspot: {
+          adapter: Etlify::Adapters::NullAdapter.new,
+          id_property: "id",
+          crm_object_type: "deals",
+          dependencies: []
+        }
+      }
+      allow(sti_sub).to receive(:etlify_crms).and_return(config)
+
+      Subscription.create!(users_profile_id: nil, type: "LendingSubscription")
+      Subscription.create!(users_profile_id: nil, type: nil)
+
+      result = described_class.call
+      expect(result.keys).to include(sti_sub)
+
+      ids = result[sti_sub][:hubspot].pluck(:id)
+      lending_ids = Subscription.where(type: "LendingSubscription").pluck(:id)
+      other_ids = Subscription.where(type: nil).pluck(:id)
+
+      expect(ids).to match_array(lending_ids)
+      expect(ids).not_to include(*other_ids)
+    ensure
+      Object.send(:remove_const, "LendingSubscription") if Object.const_defined?("LendingSubscription")
     end
   end
 
