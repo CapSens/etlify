@@ -20,6 +20,7 @@ class ApplicationRecord < ActiveRecord::Base
 end
 
 require_relative "../app/models/crm_synchronisation"
+require_relative "../app/models/etlify/pending_sync"
 require "etlify/serializers/base_serializer"
 require "etlify/serializers/user_serializer"
 require "etlify/serializers/company_serializer"
@@ -79,6 +80,15 @@ RSpec.configure do |config|
         t.string  :email
         t.string  :full_name
         t.integer :company_id
+        t.timestamps
+      end
+
+      create_table :etlify_pending_syncs, force: true do |t|
+        t.string  :dependent_type, null: false
+        t.bigint  :dependent_id,   null: false
+        t.string  :dependency_type, null: false
+        t.bigint  :dependency_id,   null: false
+        t.string  :crm_name, null: false
         t.timestamps
       end
     end

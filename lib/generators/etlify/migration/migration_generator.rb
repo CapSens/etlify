@@ -4,13 +4,18 @@ require "rails/generators/active_record"
 module Etlify
   module Generators
     class MigrationGenerator < ActiveRecord::Generators::Base
-      DEFAULT_MIGRATION_FILENAME = "create_crm_synchronisations"
+      TEMPLATES = {
+        "create_crm_synchronisations" => "create_crm_synchronisations.rb.tt",
+        "create_etlify_pending_syncs" => "create_etlify_pending_syncs.rb.tt",
+      }.freeze
 
       source_root File.expand_path("templates", __dir__)
 
       def copy_migration
+        template_name = TEMPLATES.fetch(file_name, TEMPLATES.values.first)
+
         migration_template(
-          "create_crm_synchronisations.rb.tt",
+          template_name,
           "db/migrate/#{file_name}.rb"
         )
       end
@@ -18,7 +23,7 @@ module Etlify
       private
 
       def file_name
-        (name.presence || DEFAULT_MIGRATION_FILENAME).underscore
+        (name.presence || TEMPLATES.keys.first).underscore
       end
 
       def self.next_migration_number(_dirname)

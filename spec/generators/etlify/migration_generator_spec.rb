@@ -116,12 +116,34 @@ RSpec.describe Etlify::Generators::MigrationGenerator, type: :generator do
     end
   end
 
+  describe "#copy_migration (pending_syncs template)" do
+    it "creates the etlify_pending_syncs migration when name matches",
+       :aggregate_failures do
+      gen = build_generator(["create_etlify_pending_syncs"])
+      gen.invoke_all
+
+      path = find_migration_by_suffix("create_etlify_pending_syncs.rb")
+      expect(path).to be_a(String)
+      expect(File.exist?(path)).to eq(true)
+
+      content = File.read(path)
+      expect(content).to match(
+        /class CreateEtlifyPendingSyncs < ActiveRecord::Migration\[\d+\.\d+\]/
+      )
+      expect(content).to include("create_table :etlify_pending_syncs")
+      expect(content).to include("t.string  :dependent_type, null: false")
+      expect(content).to include("t.string  :dependency_type, null: false")
+      expect(content).to include("t.string  :crm_name, null: false")
+      expect(content).to include('name: "idx_unique_pending_sync"')
+    end
+  end
+
   describe "private helpers" do
     it "file_name returns default when name is blank (\"\")",
        :aggregate_failures do
       gen = build_generator([""])
       expect(gen.send(:file_name)).to eq(
-        described_class::DEFAULT_MIGRATION_FILENAME
+        described_class::TEMPLATES.keys.first
       )
     end
 
