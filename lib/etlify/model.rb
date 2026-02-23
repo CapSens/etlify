@@ -53,6 +53,7 @@ module Etlify
           crm_object_type:,
           id_property:,
           dependencies: [],
+          sync_dependencies: [],
           sync_if: ->(_r) { true },
           stale_scope: nil,
           job_class: nil
@@ -68,6 +69,7 @@ module Etlify
             crm_object_type: crm_object_type,
             id_property: id_property,
             dependencies: Array(dependencies).map(&:to_sym),
+            sync_dependencies: Array(sync_dependencies).map(&:to_sym),
             adapter: reg.adapter,
             job_class: job_class || reg.options[:job_class],
           }

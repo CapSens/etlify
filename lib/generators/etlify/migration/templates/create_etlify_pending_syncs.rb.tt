@@ -1,0 +1,21 @@
+class <%= file_name.camelize %> < ActiveRecord::Migration[<%= ActiveRecord::VERSION::MAJOR %>.<%= ActiveRecord::VERSION::MINOR %>]
+  def change
+    create_table :etlify_pending_syncs do |t|
+      t.string  :dependent_type, null: false
+      t.bigint  :dependent_id,   null: false
+      t.string  :dependency_type, null: false
+      t.bigint  :dependency_id,   null: false
+      t.string  :crm_name, null: false
+
+      t.timestamps
+    end
+
+    add_index :etlify_pending_syncs,
+              [:dependency_type, :dependency_id, :crm_name],
+              name: "idx_pending_syncs_on_dependency_crm"
+    add_index :etlify_pending_syncs,
+              [:dependent_type, :dependent_id, :dependency_type, :dependency_id, :crm_name],
+              unique: true,
+              name: "idx_unique_pending_sync"
+  end
+end
