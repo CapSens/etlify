@@ -131,6 +131,97 @@ RSpec.describe Etlify::Synchronizer do
     end
   end
 
+  context "sync_dependencies buffer" do
+    it "returns :buffered when a sync_dependency has no crm_id", :aggregate_failures do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            sync_dependencies: [:company],
+          },
+        }
+      )
+
+      # Company has no CrmSynchronisation yet => missing crm_id
+      result = described_class.call(user, crm_name: :hubspot)
+      expect(result).to eq(:buffered)
+
+      # A PendingSync row should have been created
+      pending = Etlify::PendingSync.where(
+        dependent_type: "User",
+        dependent_id: user.id,
+        dependency_type: "Company",
+        dependency_id: company.id,
+        crm_name: "hubspot"
+      )
+      expect(pending.count).to eq(1)
+    end
+
+    it "proceeds to sync when all sync_dependencies have crm_id", :aggregate_failures do
+      # Create a CrmSynchronisation with crm_id for the company
+      CrmSynchronisation.create!(
+        crm_name: "hubspot",
+        crm_id: "airtable-company-123",
+        resource: company
+      )
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            sync_dependencies: [:company],
+          },
+        }
+      )
+
+      result = described_class.call(user, crm_name: :hubspot)
+      expect(result).to eq(:synced)
+    end
+  end
+
+  context "sync_dependencies flush" do
+    it "re-enqueues dependents after a successful sync", :aggregate_failures do
+      # Setup: company has a pending sync for user
+      Etlify::PendingSync.create!(
+        dependent_type: "User",
+        dependent_id: user.id,
+        dependency_type: "Company",
+        dependency_id: company.id,
+        crm_name: "hubspot"
+      )
+
+      # Stub Company to have etlify_crms and build_crm_payload so Synchronizer works
+      allow(Company).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "companies",
+            sync_dependencies: [],
+          },
+        }
+      )
+      allow(company).to receive(:build_crm_payload)
+        .with(crm_name: :hubspot)
+        .and_return({id: company.id, name: company.name})
+
+      # Expect the dependent (user) to be re-enqueued via find_by + crm_sync!
+      allow(User).to receive(:find_by).with(id: user.id).and_return(user)
+      expect(user).to receive(:crm_sync!).with(crm_name: :hubspot)
+
+      # Sync the company (dependency)
+      result = described_class.call(company, crm_name: :hubspot)
+      expect(result).to eq(:synced)
+
+      # PendingSync should be cleaned up
+      expect(Etlify::PendingSync.count).to eq(0)
+    end
+  end
+
   context "when adapter raises" do
     class FailingAdapter
       def upsert!(payload:, id_property:, object_type:)
