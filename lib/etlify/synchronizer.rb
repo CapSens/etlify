@@ -23,6 +23,14 @@ module Etlify
       unless @adapter.is_a?(Object) && @adapter.respond_to?(:upsert!)
         raise ArgumentError, "Adapter must be an instance responding to upsert!"
       end
+
+      if @conf[:sync_dependencies]&.any? && !pending_syncs_table_exists?
+        raise <<~MSG.squish
+          [Etlify] Missing table "etlify_pending_syncs".
+          #{resource.class.name} declares sync_dependencies but the table does not exist.
+          Please run: rails g etlify:migration create_etlify_pending_syncs && rails db:migrate
+        MSG
+      end
     end
 
     def call
@@ -190,7 +198,7 @@ module Etlify
 
       @pending_syncs_table_exists = begin
         ActiveRecord::Base.connection.data_source_exists?("etlify_pending_syncs")
-      rescue StandardError
+      rescue
         false
       end
     end
