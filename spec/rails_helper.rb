@@ -85,9 +85,9 @@ RSpec.configure do |config|
 
       create_table :etlify_pending_syncs, force: true do |t|
         t.string  :dependent_type, null: false
-        t.integer :dependent_id,   null: false
+        t.bigint  :dependent_id,   null: false
         t.string  :dependency_type, null: false
-        t.integer :dependency_id,   null: false
+        t.bigint  :dependency_id,   null: false
         t.string  :crm_name, null: false
         t.timestamps
       end

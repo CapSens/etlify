@@ -33,20 +33,19 @@ module Etlify
         # Swallow errors here to keep behavior non-fatal.
         begin
           sync_line.update!(last_synced_at: Time.current, last_error: nil)
-        rescue
+        rescue StandardError
           # no-op
         end
         return :skipped
       end
 
-      # Buffer: if any sync_dependency lacks a crm_id, defer the sync.
-      if pending_syncs_table_exists? && (missing = missing_sync_dependencies).any?
-        buffer_pending_syncs!(missing)
-        return :buffered
-      end
-
-      resource.with_lock do
-        if sync_line.stale?(digest)
+      result = resource.with_lock do
+        # Buffer: if any sync_dependency lacks a crm_id, defer the sync.
+        # Placed inside the lock to avoid race conditions.
+        if pending_syncs_table_exists? && (missing = missing_sync_dependencies).any?
+          buffer_pending_syncs!(missing)
+          :buffered
+        elsif sync_line.stale?(digest)
           crm_id = adapter.upsert!(
             payload: payload,
             id_property: conf[:id_property],
@@ -61,15 +60,18 @@ module Etlify
             last_error: nil
           )
 
-          # Flush: re-enqueue dependents that were waiting on this resource.
-          flush_pending_syncs!
-
           :synced
         else
           sync_line.update!(last_synced_at: Time.current)
           :not_modified
         end
       end
+
+      # Flush outside the lock to avoid rolling back a successful upsert
+      # if the flush fails.
+      flush_pending_syncs! if result.in?([:synced, :not_modified])
+
+      result
     rescue => e
       sync_line.update!(last_error: e.message)
       :error
@@ -104,6 +106,7 @@ module Etlify
         dep = resource.public_send(assoc_name)
         next unless dep
         next if dependency_has_crm_id?(dep)
+        next if cyclic_dependency?(dep)
 
         dep
       end
@@ -122,6 +125,20 @@ module Etlify
       # Fallback: check for a direct `#{crm_name}_id` column (legacy models).
       legacy_method = :"#{crm_name}_id"
       dep.respond_to?(legacy_method) && dep.send(legacy_method).present?
+    end
+
+    # Detect cyclic dependencies: if the dependency is already waiting on
+    # the current resource, skip buffering to avoid infinite loops.
+    def cyclic_dependency?(dep)
+      return false unless pending_syncs_table_exists?
+
+      Etlify::PendingSync.exists?(
+        dependent_type: dep.class.name,
+        dependent_id: dep.id,
+        dependency_type: resource.class.name,
+        dependency_id: resource.id,
+        crm_name: crm_name.to_s
+      )
     end
 
     # Create PendingSync rows for each missing dependency and enqueue the
@@ -149,12 +166,15 @@ module Etlify
       pending = Etlify::PendingSync.for_dependency(resource, crm_name: crm_name)
       return if pending.empty?
 
+      # Snapshot IDs to avoid deleting records created between select and delete.
+      pending_ids = pending.pluck(:id)
+
       pending.find_each do |ps|
         dependent = ps.dependent_type.constantize.find_by(id: ps.dependent_id)
-        dependent&.crm_sync!(crm_name: crm_name) if dependent&.respond_to?(:crm_sync!)
+        dependent&.crm_sync!(crm_name: ps.crm_name.to_sym) if dependent&.respond_to?(:crm_sync!)
       end
 
-      pending.delete_all
+      Etlify::PendingSync.where(id: pending_ids).delete_all
     end
 
     def pending_syncs_table_exists?
@@ -162,7 +182,7 @@ module Etlify
 
       @pending_syncs_table_exists = begin
         ActiveRecord::Base.connection.data_source_exists?("etlify_pending_syncs")
-      rescue
+      rescue StandardError
         false
       end
     end

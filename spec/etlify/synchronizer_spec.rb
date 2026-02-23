@@ -264,6 +264,84 @@ RSpec.describe Etlify::Synchronizer do
       # PendingSync should be cleaned up
       expect(Etlify::PendingSync.count).to eq(0)
     end
+
+    it "also flushes on :not_modified to avoid orphaned pendings", :aggregate_failures do
+      # First sync the company so it has a sync line with digest
+      allow(Company).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "companies",
+            sync_dependencies: [],
+          },
+        }
+      )
+      allow(company).to receive(:build_crm_payload)
+        .with(crm_name: :hubspot)
+        .and_return({id: company.id, name: company.name})
+
+      described_class.call(company, crm_name: :hubspot)
+
+      # Align digest so next call returns :not_modified
+      line = CrmSynchronisation.find_by(resource: company, crm_name: "hubspot")
+      digest = Etlify.config.digest_strategy.call(
+        company.build_crm_payload(crm_name: :hubspot)
+      )
+      line.update!(last_digest: digest)
+
+      # Create a pending sync that should be flushed even on :not_modified
+      Etlify::PendingSync.create!(
+        dependent_type: "User",
+        dependent_id: user.id,
+        dependency_type: "Company",
+        dependency_id: company.id,
+        crm_name: "hubspot"
+      )
+
+      allow(User).to receive(:find_by).with(id: user.id).and_return(user)
+      expect(user).to receive(:crm_sync!).with(crm_name: :hubspot)
+
+      result = described_class.call(company, crm_name: :hubspot)
+      expect(result).to eq(:not_modified)
+      expect(Etlify::PendingSync.count).to eq(0)
+    end
+  end
+
+  context "sync_dependencies cyclic detection" do
+    it "skips buffering when a cyclic dependency is detected", :aggregate_failures do
+      # Setup: Company depends on User (reverse direction pending sync)
+      Etlify::PendingSync.create!(
+        dependent_type: "Company",
+        dependent_id: company.id,
+        dependency_type: "User",
+        dependency_id: user.id,
+        crm_name: "hubspot"
+      )
+
+      # User depends on Company via sync_dependencies
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            sync_dependencies: [:company],
+          },
+        }
+      )
+
+      # Company has no CrmSynchronisation yet => normally would buffer,
+      # but the cyclic check should skip it.
+      result = described_class.call(user, crm_name: :hubspot)
+      expect(result).to eq(:synced)
+
+      # No new PendingSync should have been created for the user
+      expect(Etlify::PendingSync.where(
+        dependent_type: "User",
+        dependent_id: user.id
+      ).count).to eq(0)
+    end
   end
 
   context "when adapter raises" do
