@@ -1,6 +1,7 @@
 # UNRELEASED
 
 - Feat: Add `stale_scope` option to CRM DSL to restrict which records the `StaleRecords::Finder` considers. Accepts a lambda returning an ActiveRecord scope, applied at SQL level before any record is processed. This prevents unnecessary `CrmSynchronisation` rows for records that `sync_if` would skip. Models that do not specify `stale_scope` are not affected — the Finder behaves exactly as before.
+- Feat: Add `sync_dependencies` option for dependency-based sync ordering. When a dependency has no `crm_id` yet, the sync is buffered in `etlify_pending_syncs` and automatically retried once the dependency is synced. Requires running `rails g etlify:migration create_etlify_pending_syncs && rails db:migrate`.
 
 
 # V0.9.3
