@@ -99,12 +99,12 @@ module Etlify
 
           # Exclude records that have exhausted their retry budget.
           max_errors = max_sync_errors_for(crm_name)
-          error_count_ok = crm_arel[:id].eq(nil).or(
+          below_error_limit = crm_arel[:id].eq(nil).or(
             Arel::Nodes::NamedFunction.new(
               "COALESCE", [crm_arel[:error_count], Arel.sql("0")]
             ).lt(max_errors)
           )
-          where_pred = where_pred.and(error_count_ok)
+          where_pred = where_pred.and(below_error_limit)
 
           qualified_pk_sql =
             "#{conn.quote_table_name(owner_tbl)}." \
