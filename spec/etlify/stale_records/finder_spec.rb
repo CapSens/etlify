@@ -85,6 +85,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
         # FK lives on source table -> references profiles.id
         t.integer :users_profile_id
         t.string :type
+        t.integer :upload_id
         t.timestamps null: true
       end
     end
@@ -143,6 +144,9 @@ RSpec.describe Etlify::StaleRecords::Finder do
       klass.belongs_to :profile,
                        foreign_key: "users_profile_id",
                        optional: true
+      klass.belongs_to :upload, optional: true
+      klass.has_one :subscription_user, through: :profile, source: :user
+      klass.has_one :upload_owner_user, through: :upload, source: :owner, source_type: "User"
     end
 
     define_model_const("Follow") do |klass|
@@ -179,12 +183,13 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
   # --------------------------------- Utils ----------------------------------
 
-  def create_sync!(resource, crm:, last_synced_at:)
+  def create_sync!(resource, crm:, last_synced_at:, error_count: 0)
     CrmSynchronisation.create!(
       crm_name: crm.to_s,
       resource_type: resource.class.name,
       resource_id: resource.id,
-      last_synced_at: last_synced_at
+      last_synced_at: last_synced_at,
+      error_count: error_count
     )
   end
 
@@ -547,6 +552,54 @@ RSpec.describe Etlify::StaleRecords::Finder do
         expect(user_ids_for(:hubspot)).to include(user.id)
       end
     end
+
+    describe "has_one :through where through is belongs_to" do
+      def subscription_ids_for(crm)
+        described_class.call(crm_name: crm, models: [Subscription])[Subscription][crm].pluck(:id)
+      end
+
+      it "marks owner stale when source is updated via belongs_to through" do
+        allow(Subscription).to receive(:etlify_crms).and_return({
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "subscriptions",
+            dependencies: [:subscription_user]
+          }
+        })
+
+        user = User.create!(email: "bt@x.x", updated_at: now)
+        profile = Profile.create!(user: user, updated_at: now)
+        subscription = Subscription.create!(users_profile_id: profile.id, updated_at: now)
+
+        create_sync!(subscription, crm: :hubspot, last_synced_at: now + 1)
+        expect(subscription_ids_for(:hubspot)).not_to include(subscription.id)
+
+        user.update!(updated_at: now + 20)
+        expect(subscription_ids_for(:hubspot)).to include(subscription.id)
+      end
+
+      it "marks owner stale when polymorphic source with source_type is updated" do
+        allow(Subscription).to receive(:etlify_crms).and_return({
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "subscriptions",
+            dependencies: [:upload_owner_user]
+          }
+        })
+
+        user = User.create!(email: "ps@x.x", updated_at: now)
+        upload = Upload.create!(owner: user, updated_at: now)
+        subscription = Subscription.create!(upload: upload, updated_at: now)
+
+        create_sync!(subscription, crm: :hubspot, last_synced_at: now + 1)
+        expect(subscription_ids_for(:hubspot)).not_to include(subscription.id)
+
+        user.update!(updated_at: now + 20)
+        expect(subscription_ids_for(:hubspot)).to include(subscription.id)
+      end
+    end
   end
 
   # --------------- Owner side belongs_to polymorphic (avatarable) -----------
@@ -872,7 +925,9 @@ RSpec.describe Etlify::StaleRecords::Finder do
     it "returns {} when no model qualifies" do
       klass = Class.new(ApplicationRecord) do
         self.table_name = "projects"
-        def self.etlify_crms = {}
+        def self.etlify_crms
+          {}
+        end
       end
       Object.const_set("NopeModel", klass)
       results = described_class.call(models: [NopeModel])
@@ -955,6 +1010,66 @@ RSpec.describe Etlify::StaleRecords::Finder do
       if Object.const_defined?("PhantomModel")
         Object.send(:remove_const, "PhantomModel")
       end
+    end
+  end
+
+  # -------------------- error_count filtering -------------------------
+
+  describe "error_count filtering" do
+    before do
+      Etlify.configure { |c| c.max_sync_errors = 3 }
+    end
+
+    it "excludes records with error_count >= max_sync_errors" do
+      user = User.create!(email: "err@x.x")
+      create_sync!(
+        user, crm: :hubspot, last_synced_at: now - 3600, error_count: 3
+      )
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+    end
+
+    it "includes records with error_count < max_sync_errors" do
+      user = User.create!(email: "retry@x.x")
+      create_sync!(
+        user, crm: :hubspot, last_synced_at: now - 3600, error_count: 2
+      )
+      expect(user_ids_for(:hubspot)).to include(user.id)
+    end
+
+    it "includes records with no sync line (never synced)" do
+      user = User.create!(email: "new@x.x")
+      expect(user_ids_for(:hubspot)).to include(user.id)
+    end
+
+    it "includes records with error_count = 0" do
+      user = User.create!(email: "ok@x.x")
+      create_sync!(
+        user, crm: :hubspot, last_synced_at: now - 3600, error_count: 0
+      )
+      expect(user_ids_for(:hubspot)).to include(user.id)
+    end
+
+    it "respects per-CRM max_sync_errors override" do
+      Etlify::CRM.register(
+        :hubspot,
+        adapter: Etlify::Adapters::NullAdapter.new,
+        options: {max_sync_errors: 5}
+      )
+
+      user = User.create!(email: "custom@x.x")
+      create_sync!(
+        user, crm: :hubspot, last_synced_at: now - 3600, error_count: 4
+      )
+      # 4 < 5 (per-CRM limit), so still included
+      expect(user_ids_for(:hubspot)).to include(user.id)
+
+      CrmSynchronisation.where(
+        resource_id: user.id, crm_name: "hubspot"
+      ).update_all(error_count: 5)
+      # 5 >= 5, now excluded
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+    ensure
+      Etlify::CRM.registry.delete(:hubspot)
     end
   end
 

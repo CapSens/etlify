@@ -57,6 +57,7 @@ bin/rails generate etlify:install
 
 # Install sync-state tables
 bin/rails generate etlify:migration CreateCrmSynchronisations
+bin/rails generate etlify:migration create_etlify_pending_syncs
 bin/rails db:migrate
 
 # Generate a serializer for a model (optional helper)
@@ -82,7 +83,10 @@ Etlify.configure do |config|
     adapter: Etlify::Adapters::HubspotV3Adapter.new(
       access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
     ),
-    options: {job_class: "Etlify::SyncObjectWorker"}
+    options: {
+      job_class: "Etlify::SyncObjectWorker",
+      max_sync_errors: 5
+    }
   )
   # will provide DSL below for models
   # hubspot_etlified_with(...)
@@ -115,7 +119,9 @@ class User < ApplicationRecord
     # Only sync when an email exists
     sync_if: ->(user) { user.email.present? },
     # useful if your object serialization includes dependencies
-    dependencies: [:investments]
+    dependencies: [:investments],
+    # buffer sync until these associations have a crm_id
+    sync_dependencies: [:users_profile]
   )
 end
 ```
@@ -141,6 +147,72 @@ class Trading::Operation < ApplicationRecord
   )
 end
 ```
+
+#### Limiting automatic retries with `max_sync_errors`
+
+When a record fails to sync repeatedly (CRM misconfigured, server error, etc.),
+Etlify increments an `error_count` on its `CrmSynchronisation` row. Once the
+count reaches the configured limit, the record is **excluded** from
+`StaleRecords::Finder` automatic retries.
+
+The default limit is **3**. You can change it globally or per CRM:
+
+```ruby
+# Global default (config/initializers/etlify.rb)
+Etlify.configure do |config|
+  config.max_sync_errors = 10
+end
+
+# Per-CRM override (takes precedence over global)
+Etlify::CRM.register(
+  :hubspot,
+  adapter: Etlify::Adapters::HubspotV3Adapter.new(
+    access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
+  ),
+  options: { max_sync_errors: 5 }
+)
+```
+
+To re-enable sync after fixing the root cause:
+
+```ruby
+sync_line = CrmSynchronisation.find_by(
+  resource: user, crm_name: "hubspot"
+)
+sync_line.reset_error_count!
+```
+
+> **Upgrading?** Run `rails g etlify:add_error_count && rails db:migrate`
+> to add the `error_count` column.
+
+---
+
+#### Ordering sync with `sync_dependencies`
+
+When a model's CRM payload references another model's `crm_id` (e.g. an Airtable record ID), that dependency must be synced **first**. The `sync_dependencies` option handles this automatically:
+
+```ruby
+class Trading::Operation < ApplicationRecord
+  include Etlify::Model
+
+  has_one :buyer_profile, through: :buyer, source: :profile
+
+  airtable_etlified_with(
+    serializer: TradingOperationSerializer,
+    crm_object_type: "deals",
+    id_property: :id,
+    sync_dependencies: [:buyer_profile]
+  )
+end
+```
+
+**How it works:**
+
+1. Before syncing, Etlify checks each `sync_dependency` association for a `crm_id`. It first looks in the `CrmSynchronisation` table (etlified models), then falls back to a direct `#{crm_name}_id` column on the model (legacy models, e.g. `airtable_id`).
+2. If any dependency is missing a `crm_id`, the sync is **buffered**: an `Etlify::PendingSync` row is created and the dependency is enqueued for sync. The method returns `:buffered`.
+3. Once the dependency is successfully synced (`:synced`), Etlify **flushes** all its pending dependents by re-enqueuing them via `crm_sync!`.
+
+> **Note:** This requires the `etlify_pending_syncs` table. Run `rails g etlify:migration create_etlify_pending_syncs && rails db:migrate` if you haven't already.
 
 ### Writing a serializer
 

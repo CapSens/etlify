@@ -110,6 +110,15 @@ module Etlify
             )
           where_pred = crm_arel[:id].eq(nil).or(last_synced_expr.lt(threshold_expr))
 
+          # Exclude records that have exhausted their retry budget.
+          max_errors = max_sync_errors_for(crm_name)
+          below_error_limit = crm_arel[:id].eq(nil).or(
+            Arel::Nodes::NamedFunction.new(
+              "COALESCE", [crm_arel[:error_count], Arel.sql("0")]
+            ).lt(max_errors)
+          )
+          where_pred = where_pred.and(below_error_limit)
+
           qualified_pk_sql =
             "#{conn.quote_table_name(owner_tbl)}." \
             "#{conn.quote_column_name(model.primary_key)}"
@@ -152,6 +161,19 @@ module Etlify
             outer.where(id: scoped_ids)
           else
             outer
+          end
+        end
+
+        # ---------- Max sync errors resolution ----------
+
+        def max_sync_errors_for(crm_name)
+          registry_item = Etlify::CRM.registry[crm_name.to_sym]
+          if registry_item
+            registry_item.options.fetch(
+              :max_sync_errors, Etlify.config.max_sync_errors
+            )
+          else
+            Etlify.config.max_sync_errors
           end
         end
 
@@ -397,12 +419,21 @@ module Etlify
           # the same class/table as the owner (self-joins over :through).
           src_alias   = "#{source_tbl}_src"
 
-          # Correlated predicate owner -> through (ex: users_profiles.user_id = users.id)
+          # Correlated predicate owner -> through
           owner_fk = through.foreign_key
-          owner_to_through_preds = [
-            "#{qt(conn, through_tbl)}.#{qc(conn, owner_fk)} = " \
-            "#{qt(conn, owner_tbl)}.#{qc(conn, model.primary_key)}",
-          ]
+          if through.macro == :belongs_to
+            # belongs_to :through — FK is on the owner table (ex: trading_operations.buyer_id = trading_positions.id)
+            owner_to_through_preds = [
+              "#{qt(conn, owner_tbl)}.#{qc(conn, owner_fk)} = " \
+              "#{qt(conn, through_tbl)}.#{qc(conn, through.klass.primary_key)}",
+            ]
+          else
+            # has_many/has_one :through — FK is on the through table (ex: users_profiles.user_id = users.id)
+            owner_to_through_preds = [
+              "#{qt(conn, through_tbl)}.#{qc(conn, owner_fk)} = " \
+              "#{qt(conn, owner_tbl)}.#{qc(conn, model.primary_key)}",
+            ]
+          end
           if (as = through.options[:as])
             owner_to_through_preds << "#{qt(conn, through_tbl)}." \
                                       "#{qc(conn, "#{as}_type")} = #{conn.quote(model.name)}"
@@ -441,9 +472,17 @@ module Etlify
             if source.macro == :belongs_to
               src_pk = source.options[:primary_key] || reflection.klass.primary_key
               src_fk = source.foreign_key
-              join_on =
+              join_preds = [
                 "#{q_alias(conn, src_alias)}.#{qc(conn, src_pk)} = " \
-                "#{qt(conn, through_tbl)}.#{qc(conn, src_fk)}"
+                "#{qt(conn, through_tbl)}.#{qc(conn, src_fk)}",
+              ]
+              # Polymorphic source type filter (e.g. owner_type = 'Users::Profile')
+              if source.options[:polymorphic] && reflection.options[:source_type]
+                join_preds << "#{qt(conn, through_tbl)}." \
+                              "#{qc(conn, "#{source.name}_type")} = " \
+                              "#{conn.quote(reflection.options[:source_type])}"
+              end
+              join_on = join_preds.map { |p| "(#{p})" }.join(" AND ")
             else
               src_fk =
                 source.foreign_key ||
@@ -530,7 +569,9 @@ module Etlify
           Arel::Nodes::NamedFunction.new(greatest_function_name(conn), exprs)
         end
 
-        def fn_coalesce(_conn) = "COALESCE"
+        def fn_coalesce(_conn)
+          "COALESCE"
+        end
 
         # Adapter-agnostic "epoch" as an Arel node.
         # - PostgreSQL -> CAST('1970-01-01 00:00:00' AS TIMESTAMP)
