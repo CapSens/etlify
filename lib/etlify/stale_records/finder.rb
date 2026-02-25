@@ -42,7 +42,7 @@ module Etlify
         # ---------- Model discovery / filtering ----------
 
         def etlified_models(crm_name: nil)
-          ActiveRecord::Base.descendants.select do |m|
+          models = ActiveRecord::Base.descendants.select do |m|
             next false unless m.respond_to?(:table_exists?) && m.table_exists?
             next false unless m.respond_to?(:etlify_crms) && m.etlify_crms.present?
 
@@ -51,6 +51,13 @@ module Etlify
             else
               m.etlify_crms.any?
             end
+          end
+
+          # Skip STI subclasses that only inherited etlify_crms via
+          # class_attribute from their base class (they don't have their
+          # own config). The base class already covers those records.
+          models.reject do |m|
+            m.superclass.in?(models) && m.table_name == m.superclass.table_name
           end
         end
 
@@ -80,6 +87,12 @@ module Etlify
           owner_tbl  = model.table_name
           owner_arel = arel_table(model)
           crm_arel   = CrmSynchronisation.arel_table
+
+          # For STI subclasses, use the base class to build queries so Rails
+          # does not inject WHERE type = '...' on the subquery alias (which
+          # only exposes the id column). The STI filter is added manually to
+          # the inner query where the real table columns are accessible.
+          query_class = sti_subclass?(model) ? model.base_class : model
 
           join_on =
             crm_arel[:resource_type].eq(model.name)
@@ -111,12 +124,20 @@ module Etlify
             "#{conn.quote_column_name(model.primary_key)}"
 
           inner_rel =
-            model.unscoped
+            query_class.unscoped
                 .from(owner_arel)
                 .joins(join_sql)
                 .where(where_pred)
                 .select(Arel.sql("#{qualified_pk_sql} AS id"))
                 .reorder(Arel.sql("#{qualified_pk_sql} ASC"))
+
+          # Add STI type filter on the inner query where the real table is
+          # accessible, rather than letting Rails add it on the outer query.
+          if sti_subclass?(model)
+            inner_rel = inner_rel.where(
+              owner_arel[model.inheritance_column].eq(model.sti_name)
+            )
+          end
 
           sub_sql   = inner_rel.to_sql
 
@@ -126,7 +147,7 @@ module Etlify
           sub_from  = Arel.sql("(#{sub_sql}) AS #{tbl_alias}")
 
           # Keep a single id column and stable order.
-          outer = model.unscoped
+          outer = query_class.unscoped
               .from(sub_from)
               .select("id")
               .reorder("id ASC")
@@ -490,6 +511,12 @@ module Etlify
         end
 
         # ----------------------------- Helpers -----------------------------
+
+        # True when the model is an STI subclass (shares table with its parent).
+        def sti_subclass?(model)
+          model.base_class != model
+        end
+
         def qt(conn, table_name)
           conn.quote_table_name(table_name)
         end
