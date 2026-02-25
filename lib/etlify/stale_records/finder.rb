@@ -398,12 +398,21 @@ module Etlify
           # the same class/table as the owner (self-joins over :through).
           src_alias   = "#{source_tbl}_src"
 
-          # Correlated predicate owner -> through (ex: users_profiles.user_id = users.id)
+          # Correlated predicate owner -> through
           owner_fk = through.foreign_key
-          owner_to_through_preds = [
-            "#{qt(conn, through_tbl)}.#{qc(conn, owner_fk)} = " \
-            "#{qt(conn, owner_tbl)}.#{qc(conn, model.primary_key)}",
-          ]
+          if through.macro == :belongs_to
+            # belongs_to :through — FK is on the owner table (ex: trading_operations.buyer_id = trading_positions.id)
+            owner_to_through_preds = [
+              "#{qt(conn, owner_tbl)}.#{qc(conn, owner_fk)} = " \
+              "#{qt(conn, through_tbl)}.#{qc(conn, through.klass.primary_key)}",
+            ]
+          else
+            # has_many/has_one :through — FK is on the through table (ex: users_profiles.user_id = users.id)
+            owner_to_through_preds = [
+              "#{qt(conn, through_tbl)}.#{qc(conn, owner_fk)} = " \
+              "#{qt(conn, owner_tbl)}.#{qc(conn, model.primary_key)}",
+            ]
+          end
           if (as = through.options[:as])
             owner_to_through_preds << "#{qt(conn, through_tbl)}." \
                                       "#{qc(conn, "#{as}_type")} = #{conn.quote(model.name)}"
@@ -442,9 +451,17 @@ module Etlify
             if source.macro == :belongs_to
               src_pk = source.options[:primary_key] || reflection.klass.primary_key
               src_fk = source.foreign_key
-              join_on =
+              join_preds = [
                 "#{q_alias(conn, src_alias)}.#{qc(conn, src_pk)} = " \
-                "#{qt(conn, through_tbl)}.#{qc(conn, src_fk)}"
+                "#{qt(conn, through_tbl)}.#{qc(conn, src_fk)}",
+              ]
+              # Polymorphic source type filter (e.g. owner_type = 'Users::Profile')
+              if source.options[:polymorphic] && reflection.options[:source_type]
+                join_preds << "#{qt(conn, through_tbl)}." \
+                              "#{qc(conn, "#{source.name}_type")} = " \
+                              "#{conn.quote(reflection.options[:source_type])}"
+              end
+              join_on = join_preds.map { |p| "(#{p})" }.join(" AND ")
             else
               src_fk =
                 source.foreign_key ||

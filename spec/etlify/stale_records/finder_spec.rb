@@ -84,6 +84,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
       create_table :subscriptions, force: true do |t|
         # FK lives on source table -> references profiles.id
         t.integer :users_profile_id
+        t.integer :upload_id
         t.timestamps null: true
       end
     end
@@ -142,6 +143,9 @@ RSpec.describe Etlify::StaleRecords::Finder do
       klass.belongs_to :profile,
                        foreign_key: "users_profile_id",
                        optional: true
+      klass.belongs_to :upload, optional: true
+      klass.has_one :subscription_user, through: :profile, source: :user
+      klass.has_one :upload_owner_user, through: :upload, source: :owner, source_type: "User"
     end
 
     define_model_const("Follow") do |klass|
@@ -493,6 +497,54 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
         subscription.update!(updated_at: now + 20)
         expect(user_ids_for(:hubspot)).to include(user.id)
+      end
+    end
+
+    describe "has_one :through where through is belongs_to" do
+      def subscription_ids_for(crm)
+        described_class.call(crm_name: crm, models: [Subscription])[Subscription][crm].pluck(:id)
+      end
+
+      it "marks owner stale when source is updated via belongs_to through" do
+        allow(Subscription).to receive(:etlify_crms).and_return({
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "subscriptions",
+            dependencies: [:subscription_user]
+          }
+        })
+
+        user = User.create!(email: "bt@x.x", updated_at: now)
+        profile = Profile.create!(user: user, updated_at: now)
+        subscription = Subscription.create!(users_profile_id: profile.id, updated_at: now)
+
+        create_sync!(subscription, crm: :hubspot, last_synced_at: now + 1)
+        expect(subscription_ids_for(:hubspot)).not_to include(subscription.id)
+
+        user.update!(updated_at: now + 20)
+        expect(subscription_ids_for(:hubspot)).to include(subscription.id)
+      end
+
+      it "marks owner stale when polymorphic source with source_type is updated" do
+        allow(Subscription).to receive(:etlify_crms).and_return({
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "subscriptions",
+            dependencies: [:upload_owner_user]
+          }
+        })
+
+        user = User.create!(email: "ps@x.x", updated_at: now)
+        upload = Upload.create!(owner: user, updated_at: now)
+        subscription = Subscription.create!(upload: upload, updated_at: now)
+
+        create_sync!(subscription, crm: :hubspot, last_synced_at: now + 1)
+        expect(subscription_ids_for(:hubspot)).not_to include(subscription.id)
+
+        user.update!(updated_at: now + 20)
+        expect(subscription_ids_for(:hubspot)).to include(subscription.id)
       end
     end
   end
