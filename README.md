@@ -378,24 +378,11 @@ When `rate_limit` is not configured, no throttling is applied (current behaviour
 
 #### How it works
 
-1. `BatchSyncJob` creates a `RateLimiter` from the CRM's `rate_limit` config and injects it into the adapter before processing.
-2. Each HTTP request in the adapter calls `rate_limiter.throttle!`, which sleeps the minimum necessary time to stay within the rate limit.
-3. If the CRM returns a **429 (Rate Limited)** response despite throttling, the job re-enqueues itself with the **remaining records** after a backoff delay (default: 10 seconds).
-4. A cache-based lock ensures only **one `BatchSyncJob` runs per CRM** at a time.
-
-#### Custom job class
-
-You can override the job class used by `BatchSync` per CRM:
-
-```ruby
-Etlify::CRM.register(
-  :hubspot,
-  adapter: Etlify::Adapters::HubspotV3Adapter.new(
-    access_token: ENV[“HUBSPOT_PRIVATE_APP_TOKEN”]
-  ),
-  options: { job_class: “MyCustomBatchJob” }
-)
-```
+1. At `CRM.register` time, if `rate_limit` is configured and the adapter supports `rate_limiter=`, a `RateLimiter` is **permanently installed** on the adapter.
+2. Every HTTP request in the adapter calls `rate_limiter.throttle!`, which sleeps the minimum necessary time to stay within the rate limit.
+3. **All sync paths are throttled**: `BatchSyncJob`, individual `SyncJob`, inline `crm_sync!(async: false)`, and pending sync flushes — they all go through the same adapter.
+4. If the CRM returns a **429 (Rate Limited)** response despite throttling, `BatchSyncJob` re-enqueues itself with the **remaining records** after a backoff delay (default: 10 seconds).
+5. A cache-based lock ensures only **one `BatchSyncJob` runs per CRM** at a time.
 
 #### Custom adapter support
 
