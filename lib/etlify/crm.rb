@@ -35,6 +35,8 @@ module Etlify
           end
         copied_options.freeze
 
+        install_rate_limiter!(adapter, options[:rate_limit])
+
         registry[key] = RegistryItem.new(
           name: key,
           adapter: adapter,
@@ -56,6 +58,16 @@ module Etlify
       end
 
       private
+
+      def install_rate_limiter!(adapter, rate_limit)
+        return unless rate_limit
+        return unless adapter.respond_to?(:rate_limiter=)
+
+        adapter.rate_limiter = Etlify::RateLimiter.new(
+          max_requests: rate_limit[:max_requests],
+          period: rate_limit[:period]
+        )
+      end
 
       def validate_rate_limit!(rate_limit)
         unless rate_limit.is_a?(Hash)

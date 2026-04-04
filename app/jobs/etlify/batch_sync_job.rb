@@ -41,10 +41,6 @@ module Etlify
     #   discovery mode
     def perform(crm_name, record_pairs = nil)
       crm_sym = crm_name.to_sym
-      registry_item = Etlify::CRM.fetch(crm_sym)
-      adapter = registry_item.adapter
-
-      install_rate_limiter!(adapter, registry_item)
 
       pairs = if record_pairs
         record_pairs.each_slice(2).to_a
@@ -53,8 +49,6 @@ module Etlify
       end
 
       process_pairs(pairs, crm_sym)
-    ensure
-      remove_rate_limiter!(adapter) if adapter
     end
 
     private
@@ -138,24 +132,6 @@ module Etlify
         remaining.concat(model_pairs)
       end
       remaining
-    end
-
-    def install_rate_limiter!(adapter, registry_item)
-      return unless adapter.respond_to?(:rate_limiter=)
-
-      rate_limit = registry_item.options[:rate_limit]
-      return unless rate_limit
-
-      adapter.rate_limiter = Etlify::RateLimiter.new(
-        max_requests: rate_limit[:max_requests],
-        period: rate_limit[:period]
-      )
-    end
-
-    def remove_rate_limiter!(adapter)
-      return unless adapter.respond_to?(:rate_limiter=)
-
-      adapter.rate_limiter = nil
     end
 
     def extract_retry_after(error)

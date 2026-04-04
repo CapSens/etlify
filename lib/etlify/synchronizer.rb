@@ -170,10 +170,7 @@ module Etlify
         )
 
         # Enqueue the dependency so it gets synced and obtains a crm_id.
-        # In a rate-limited context (BatchSyncJob), sync inline to go
-        # through the adapter's rate limiter instead of enqueuing a
-        # standalone SyncJob that would bypass throttling.
-        sync_or_enqueue!(dep)
+        dep.crm_sync!(crm_name: crm_name) if dep.respond_to?(:crm_sync!)
       end
     end
 
@@ -190,29 +187,10 @@ module Etlify
 
       pending.find_each do |ps|
         dependent = ps.dependent_type.constantize.find_by(id: ps.dependent_id)
-        next unless dependent
-
-        sync_or_enqueue!(dependent, crm_name_override: ps.crm_name.to_sym)
+        dependent&.crm_sync!(crm_name: ps.crm_name.to_sym) if dependent&.respond_to?(:crm_sync!)
       end
 
       Etlify::PendingSync.where(id: pending_ids).delete_all
-    end
-
-    # When the adapter has a rate_limiter (i.e. we are inside a
-    # BatchSyncJob), sync inline so every HTTP call goes through
-    # the shared throttle. Otherwise fall back to the async path.
-    def sync_or_enqueue!(record, crm_name_override: nil)
-      target_crm = crm_name_override || crm_name
-
-      if rate_limited_context? && record.class.respond_to?(:etlify_crms) && record.class.etlify_crms[target_crm]
-        Etlify::Synchronizer.call(record, crm_name: target_crm)
-      elsif record.respond_to?(:crm_sync!)
-        record.crm_sync!(crm_name: target_crm)
-      end
-    end
-
-    def rate_limited_context?
-      adapter.respond_to?(:rate_limiter) && adapter.rate_limiter
     end
 
     def pending_syncs_table_exists?

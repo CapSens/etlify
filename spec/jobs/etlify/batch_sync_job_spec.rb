@@ -94,48 +94,6 @@ RSpec.describe Etlify::BatchSyncJob do
     end
   end
 
-  describe "rate limiter injection" do
-    it "installs rate limiter on adapter when rate_limit is configured" do
-      adapter = Etlify::Adapters::NullAdapter.new
-      adapter.define_singleton_method(:rate_limiter=) { |v| @rl = v }
-      adapter.define_singleton_method(:rate_limiter) { @rl }
-
-      Etlify::CRM.register(
-        :rate_limited_crm,
-        adapter: adapter,
-        options: {rate_limit: {max_requests: 10, period: 1}}
-      )
-      allow(User).to receive(:etlify_crms).and_return(
-        {
-          rate_limited_crm: {
-            adapter: adapter,
-            id_property: "email",
-            crm_object_type: "contacts",
-            guard: nil,
-            sync_dependencies: [],
-          },
-        }
-      )
-
-      user = create_user!(index: 1)
-      pairs = ["User", user.id]
-
-      limiter_during_sync = nil
-      original_batch_upsert = adapter.method(:batch_upsert!)
-      allow(adapter).to receive(:batch_upsert!) do |**args|
-        limiter_during_sync = adapter.rate_limiter
-        original_batch_upsert.call(**args)
-      end
-
-      described_class.perform_now("rate_limited_crm", pairs)
-
-      expect(limiter_during_sync).to be_a(Etlify::RateLimiter)
-      expect(adapter.rate_limiter).to be_nil
-
-      Etlify::CRM.registry.delete(:rate_limited_crm)
-    end
-  end
-
   describe "RateLimited error handling" do
     it "re-enqueues on RateLimited from batch_upsert!" do
       user1 = create_user!(index: 1)
