@@ -19,6 +19,7 @@ module Etlify
     #   adapter.delete!(object_type: "contacts", crm_id: "123") # => true, or false if 404
     class HubspotV3Adapter
       API_BASE = "https://api.hubapi.com"
+      BATCH_MAX_SIZE = 100
 
       # @param access_token [String] HubSpot private app token
       # @param http_client [#request] Optional HTTP client for tests. Signature: request(method, url, headers:, body:)
@@ -84,6 +85,59 @@ module Etlify
         return false if resp[:status] == 404
 
         raise_for_error!(resp, path: path)
+      end
+
+      # Batch upsert via HubSpot's native /batch/upsert endpoint.
+      # @param object_type [String] CRM object type
+      # @param records [Array<Hash>] Properties hashes (must include the id_property key)
+      # @param id_property [String] Unique property for matching (e.g., "email")
+      # @return [Array<String>] hs_object_id strings for each upserted record
+      def batch_upsert!(object_type:, records:, id_property:)
+        raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
+        raise ArgumentError, "id_property must be provided" if id_property.nil? || id_property.to_s.empty?
+        raise ArgumentError, "records must be a non-empty Array" unless records.is_a?(Array) && !records.empty?
+
+        path = "/crm/v3/objects/#{object_type}/batch/upsert"
+
+        records.each_slice(BATCH_MAX_SIZE).flat_map do |slice|
+          body = {
+            inputs: slice.map do |record|
+              props = stringify_keys(record)
+              id_value = props.delete(id_property.to_s)
+              {
+                id: id_value.to_s,
+                idProperty: id_property.to_s,
+                properties: props,
+              }
+            end,
+          }
+
+          resp = request(:post, path, body: body)
+          raise_for_error!(resp, path: path)
+          extract_batch_ids(resp)
+        end
+      end
+
+      # Batch delete (archive) via HubSpot's native /batch/archive endpoint.
+      # @param object_type [String] CRM object type
+      # @param crm_ids [Array<String>] hs_object_id values to archive
+      # @return [Boolean] true when all batches succeed
+      def batch_delete!(object_type:, crm_ids:)
+        raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
+        raise ArgumentError, "crm_ids must be a non-empty Array" unless crm_ids.is_a?(Array) && !crm_ids.empty?
+
+        path = "/crm/v3/objects/#{object_type}/batch/archive"
+
+        crm_ids.each_slice(BATCH_MAX_SIZE) do |slice|
+          body = {
+            inputs: slice.map { |id| {id: id.to_s} },
+          }
+
+          resp = request(:post, path, body: body)
+          raise_for_error!(resp, path: path)
+        end
+
+        true
       end
 
       private
@@ -245,6 +299,13 @@ module Etlify
         end
 
         raise_for_error!(resp, path: path)
+      end
+
+      def extract_batch_ids(resp)
+        results = resp[:json].is_a?(Hash) ? resp[:json]["results"] : nil
+        return [] unless results.is_a?(Array)
+
+        results.map { |r| r["id"].to_s }
       end
 
       def stringify_keys(hash)
