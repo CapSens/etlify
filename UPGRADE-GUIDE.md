@@ -1,3 +1,123 @@
+# UPGRADING FROM 0.9.4 -> 0.9.5
+
+## 1. Overview
+
+Etlify 0.9.5 introduces batch synchronization with built-in rate limiting:
+
+**New features:**
+
+- **`BatchSyncJob`** — A single job per CRM replaces N individual `SyncJob` instances for batch sync
+- **`RateLimiter`** — Sleep-based rate limiting installed permanently on the adapter at `CRM.register` time
+- **`BatchSynchronizer`** — Batch-aware synchronizer using `adapter.batch_upsert!` (100 records/request for HubSpot)
+- **HubSpot batch operations** — `batch_upsert!` and `batch_delete!` via native batch endpoints
+- **`DefaultHttp`** — Shared HTTP client extracted for adapter reuse
+
+---
+
+## 2. Database migrations
+
+No database migration required for this upgrade.
+
+---
+
+## 3. Configuration changes
+
+### 3.1. Rate limiting (recommended)
+
+Add `rate_limit` to your CRM registration to enable automatic throttling:
+
+```ruby
+Etlify::CRM.register(
+  :hubspot,
+  adapter: Etlify::Adapters::HubspotV3Adapter.new(
+    access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
+  ),
+  options: {
+    rate_limit: { max_requests: 100, period: 10 },
+    max_sync_errors: 5,
+  }
+)
+```
+
+The rate limiter is installed permanently on the adapter. **All sync paths are throttled**: `BatchSyncJob`, individual `SyncJob`, inline `crm_sync!(async: false)`, and pending sync flushes.
+
+Without `rate_limit`, no throttling is applied (current behaviour preserved).
+
+### 3.2. Custom `job_class` (still supported)
+
+The `job_class` option on `CRM.register` and model DSL is still supported. Custom job classes will also benefit from rate limiting since the rate limiter lives on the adapter, not on the job.
+
+---
+
+## 4. Batch sync changes
+
+### 4.1. `BatchSync.call(async: true)` behaviour change
+
+**Before:** Enqueues one `SyncJob` per stale record (N jobs).
+
+**After:** Enqueues one `BatchSyncJob` per CRM with all stale record pairs.
+
+This is **not a breaking change** — the API is identical, only the internal job dispatch changed. The return value (`{total:, per_model:, errors:}`) is unchanged.
+
+### 4.2. `BatchSyncJob` concurrency lock
+
+A cache-based lock ensures only one `BatchSyncJob` per CRM runs at a time. If a second `BatchSyncJob` is enqueued for the same CRM while one is running, it is silently dropped.
+
+### 4.3. `batch_upsert!` on adapters
+
+If the adapter supports `batch_upsert!` (HubSpot, NullAdapter), `BatchSyncJob` uses `BatchSynchronizer` to group records and call `batch_upsert!` (up to 100 records per API request for HubSpot). If the adapter does not support `batch_upsert!`, it falls back to sequential `Synchronizer.call` per record.
+
+---
+
+## 5. Custom adapter updates (if applicable)
+
+If you have a custom adapter and want to benefit from rate limiting, add a `rate_limiter=` accessor and call `@rate_limiter&.throttle!` before each HTTP request:
+
+```ruby
+class MyCrmAdapter
+  attr_accessor :rate_limiter
+
+  private
+
+  def request(method, path, body: nil)
+    @rate_limiter&.throttle!
+    # ... perform HTTP request
+  end
+end
+```
+
+If you also want batch support, implement `batch_upsert!` returning a `Hash{id_property_value => crm_id}`:
+
+```ruby
+def batch_upsert!(object_type:, records:, id_property:)
+  # ... call CRM batch API
+  # return { "john@example.com" => "123", "jane@example.com" => "456" }
+end
+```
+
+---
+
+## 6. QA & testing checklist
+
+- [ ] `rate_limit` configured in initializer for each CRM
+- [ ] `BatchSync.call(async: true)` enqueues `BatchSyncJob` (not N `SyncJob`)
+- [ ] Individual `model.crm_sync!` still works and is rate-limited
+- [ ] `bundle exec rspec` passes
+- [ ] No 429 errors in production logs after deployment
+
+---
+
+## 7. Backward compatibility
+
+All changes are backward compatible:
+
+- `SyncJob` is kept for individual `model.crm_sync!` calls
+- `BatchSync.call(async: false)` (inline mode) is unchanged
+- Adapters without `rate_limiter=` or `batch_upsert!` continue to work
+- `rate_limit` is optional — no throttle when absent
+
+---
+
 # UPGRADING FROM 0.9.3 -> 0.9.4
 
 ## 1. Overview
