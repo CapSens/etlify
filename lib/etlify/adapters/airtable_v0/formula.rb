@@ -23,10 +23,10 @@ module Etlify
           if value.is_a?(Numeric)
             value.to_s
           else
-            str = value.to_s
-                       .gsub("\\", "\\\\\\\\")
-                       .gsub('"', '\\"')
-            "\"#{str}\""
+            escaped_value = value.to_s
+                                 .gsub("\\", "\\\\\\\\")
+                                 .gsub('"', '\\"')
+            "\"#{escaped_value}\""
           end
         end
       end

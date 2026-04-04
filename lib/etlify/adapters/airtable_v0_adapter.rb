@@ -55,12 +55,12 @@ module Etlify
         validate_present!(:crm_id, crm_id)
 
         path = "#{@client.base_path(object_type)}/#{crm_id}"
-        resp = @client.delete(path)
+        response = @client.delete(path)
 
-        return true if resp[:status].between?(200, 299)
-        return false if resp[:status] == 404
+        return true if response[:status].between?(200, 299)
+        return false if response[:status] == 404
 
-        @client.raise_for_error!(resp, path: path)
+        @client.raise_for_error!(response, path: path)
       end
 
       # --- Batch operations (Airtable-specific) ---
@@ -80,12 +80,12 @@ module Etlify
             performUpsert: {
               fieldsToMergeOn: [id_property.to_s],
             },
-            records: slice.map { |f| {fields: stringify_keys(f)} },
+            records: slice.map { |fields| {fields: stringify_keys(fields)} },
           }
 
-          resp = @client.patch(path, body: body)
-          @client.raise_for_error!(resp, path: path)
-          extract_records(resp)
+          response = @client.patch(path, body: body)
+          @client.raise_for_error!(response, path: path)
+          extract_records(response)
         end
       end
 
@@ -100,9 +100,9 @@ module Etlify
 
         crm_ids.each_slice(BATCH_MAX_SIZE).flat_map do |slice|
           query = slice.map { |id| ["records[]", id.to_s] }
-          resp = @client.delete(path, query: query)
-          @client.raise_for_error!(resp, path: path)
-          extract_records(resp)
+          response = @client.delete(path, query: query)
+          @client.raise_for_error!(response, path: path)
+          extract_records(response)
         end
       end
 
@@ -114,32 +114,32 @@ module Etlify
         formula = AirtableV0::Formula.eq(field_name, value)
         path = @client.base_path(object_type)
 
-        resp = @client.get(path, query: {
+        response = @client.get(path, query: {
           "filterByFormula" => formula,
           "maxRecords" => 1,
         })
 
-        return first_record_id(resp) if resp[:status] == 200
-        return nil if resp[:status] == 404
+        return first_record_id(response) if response[:status] == 200
+        return nil if response[:status] == 404
 
-        @client.raise_for_error!(resp, path: path)
+        @client.raise_for_error!(response, path: path)
       end
 
       def create_record(object_type, payload)
         path = @client.base_path(object_type)
-        resp = @client.post(path, body: {fields: stringify_keys(payload)})
+        response = @client.post(path, body: {fields: stringify_keys(payload)})
 
-        if resp[:status].between?(200, 299) && resp[:json].is_a?(Hash) && resp[:json]["id"]
-          return resp[:json]["id"].to_s
+        if response[:status].between?(200, 299) && response[:json].is_a?(Hash) && response[:json]["id"]
+          return response[:json]["id"].to_s
         end
 
-        @client.raise_for_error!(resp, path: path)
+        @client.raise_for_error!(response, path: path)
       end
 
       def update_record(object_type, record_id, payload)
         path = "#{@client.base_path(object_type)}/#{record_id}"
-        resp = @client.patch(path, body: {fields: stringify_keys(payload)})
-        @client.raise_for_error!(resp, path: path)
+        response = @client.patch(path, body: {fields: stringify_keys(payload)})
+        @client.raise_for_error!(response, path: path)
         true
       end
 
@@ -160,17 +160,17 @@ module Etlify
         find_record_by_field(object_type, key_str, unique_value)
       end
 
-      def first_record_id(resp)
-        return nil unless resp[:json].is_a?(Hash)
+      def first_record_id(response)
+        return nil unless response[:json].is_a?(Hash)
 
-        records = resp[:json]["records"]
+        records = response[:json]["records"]
         return nil unless records.is_a?(Array) && records.any?
 
         records.first["id"]
       end
 
-      def extract_records(resp)
-        returned = resp[:json].is_a?(Hash) ? resp[:json]["records"] : nil
+      def extract_records(response)
+        returned = response[:json].is_a?(Hash) ? response[:json]["records"] : nil
         returned.is_a?(Array) ? returned : []
       end
 

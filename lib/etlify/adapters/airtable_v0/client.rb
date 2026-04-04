@@ -38,25 +38,25 @@ module Etlify
           "/#{@base_id}/#{object_type}"
         end
 
-        def raise_for_error!(resp, path:)
-          status = resp[:status].to_i
+        def raise_for_error!(response, path:)
+          status = response[:status].to_i
           return if status.between?(200, 299)
 
-          payload = resp[:json].is_a?(Hash) ? resp[:json] : {}
-          err = payload["error"]
+          body = response[:json].is_a?(Hash) ? response[:json] : {}
+          error_detail = body["error"]
 
-          message = if err.is_a?(Hash)
-            err["message"] || "Airtable API request failed"
+          message = if error_detail.is_a?(Hash)
+            error_detail["message"] || "Airtable API request failed"
           else
-            payload["message"] || "Airtable API request failed"
+            body["message"] || "Airtable API request failed"
           end
 
-          type = err["type"] if err.is_a?(Hash)
+          error_type = error_detail["type"] if error_detail.is_a?(Hash)
           full_message = "#{message} (status=#{status}, path=#{path}"
-          full_message << ", type=#{type}" if type
+          full_message << ", type=#{error_type}" if error_type
           full_message << ")"
 
-          klass =
+          error_class =
             case status
             when 401, 403 then Etlify::Unauthorized
             when 404      then Etlify::NotFound
@@ -65,14 +65,14 @@ module Etlify
             else Etlify::ApiError
             end
 
-          raise klass.new(
+          raise error_class.new(
             full_message,
             status: status,
-            code: type,
-            category: type,
+            code: error_type,
+            category: error_type,
             correlation_id: nil,
-            details: err,
-            raw: resp[:body]
+            details: error_detail,
+            raw: response[:body]
           )
         end
 
@@ -93,25 +93,25 @@ module Etlify
           raw_body = body && JSON.dump(body)
 
           begin
-            res = @http.request(
+            response = @http.request(
               method, url, headers: headers, body: raw_body
             )
-          rescue => e
+          rescue => exception
             raise Etlify::TransportError.new(
-              "HTTP transport error: #{e.class}: #{e.message}",
+              "HTTP transport error: #{exception.class}: #{exception.message}",
               status: 0,
               raw: nil
             )
           end
 
-          res[:json] = parse_json_safe(res[:body])
-          res
+          response[:json] = parse_json_safe(response[:body])
+          response
         end
 
-        def parse_json_safe(str)
-          return nil if str.nil? || str.empty?
+        def parse_json_safe(raw_body)
+          return nil if raw_body.nil? || raw_body.empty?
 
-          JSON.parse(str)
+          JSON.parse(raw_body)
         rescue JSON::ParserError
           nil
         end
