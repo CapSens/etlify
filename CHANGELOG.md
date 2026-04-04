@@ -7,6 +7,7 @@
 - Feat: Add `Etlify::BatchSynchronizer` — batch-aware synchronizer that applies per-record pre-checks (guard, digest, dependencies) then calls `adapter.batch_upsert!` for all ready records. Used by `BatchSyncJob` when the adapter supports it, with fallback to sequential `Synchronizer.call`.
 - Feat: Adapters now support an optional `rate_limiter=` accessor for per-HTTP-request throttling.
 - Feat: Add `batch_upsert!` and `batch_delete!` to `NullAdapter` for test support.
+- Feat: Add `AirtableV0Adapter` for Airtable API v0 integration. Supports `upsert!` and `delete!` (standard Etlify interface) plus batch operations: `batch_upsert!` (via Airtable's native `performUpsert`, up to 10 records per request) and `batch_delete!`. Uses `Net::HTTP` (zero external dependency), injectable `http_client:` for testing, and structured error handling via the Etlify error hierarchy. Supports rate limiting via `rate_limiter=` accessor.
 
 # V0.9.4
 

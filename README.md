@@ -20,7 +20,7 @@ Etlify sits beside your app; it does **not** try to own your domain or backgroun
 | ----------- | ------------------------------------------------------------- | --------------------------------------------------- |
 | DSL         | `include Etlify::Model` + `etlified_with(...)` on your models | Opt-in sync with a single line; clear, local intent |
 | Serialisers | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
-| Adapters    | HubSpot adapter included; plug your own                       | Swap CRMs without touching model code               |
+| Adapters    | HubSpot & Airtable adapters included; plug your own           | Swap CRMs without touching model code               |
 | Idempotence | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
 | Jobs        | `crm_sync!` enqueues an ActiveJob; batch sync via `BatchSyncJob` | Fits your queue; built-in rate limiting              |
 | Delete      | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
@@ -354,7 +354,7 @@ The method returns a stats Hash:
 
 ### Rate limiting
 
-CRM APIs enforce rate limits (e.g. HubSpot: ~100 requests/10s). Etlify provides built-in rate limiting at the **adapter level** (per HTTP request), so multi-request operations like search + upsert are correctly throttled.
+CRM APIs enforce rate limits (e.g. HubSpot: ~100 requests/10s, Airtable: 5 requests/s). Etlify provides built-in rate limiting at the **adapter level** (per HTTP request), so multi-request operations like search + upsert are correctly throttled.
 
 #### Configuration
 
@@ -521,6 +521,80 @@ adapter.batch_delete!(
 
 ---
 
+## Airtable adapter (API v0)
+
+Etlify ships with `Etlify::Adapters::AirtableV0Adapter`. It uses `Net::HTTP` (no external dependency) and supports both single-record and batch operations.
+
+### Configuration
+
+```ruby
+Etlify.configure do |config|
+  Etlify::CRM.register(
+    :airtable,
+    adapter: Etlify::Adapters::AirtableV0Adapter.new(
+      access_token: ENV["AIRTABLE_TOKEN"],
+      base_id: ENV["AIRTABLE_BASE_ID"]
+    ),
+    options: {
+      rate_limit: { max_requests: 5, period: 1 },
+    }
+  )
+end
+```
+
+### Behaviour
+
+- `object_type`: the Airtable table ID or name (e.g. `"tblContacts"`, `"Contacts"`).
+- `id_property`: field name used to search for existing records via `filterByFormula`. If a match is found, the record is updated; otherwise a new record is created.
+- `crm_id`: if provided (e.g. `"recXXXXXXXX"`), the adapter skips the search and updates the record directly.
+
+### Example: Contact upsert
+
+```ruby
+class User < ApplicationRecord
+  include Etlify::Model
+
+  airtable_etlified_with(
+    serializer: UserSerializer,
+    crm_object_type: "tblContacts",
+    id_property: :Email,
+    sync_if: ->(user) { user.email.present? }
+  )
+end
+
+# Later
+user.airtable_crm_sync!
+```
+
+### Batch operations
+
+The Airtable adapter provides two additional methods for bulk operations, using Airtable's native batch endpoints (up to 10 records per request, auto-sliced):
+
+```ruby
+adapter = Etlify::CRM.registry[:airtable].adapter
+
+# Batch upsert via Airtable's native performUpsert
+# Returns a Hash { id_property_value => record_id }
+adapter.batch_upsert!(
+  object_type: "tblContacts",
+  records: [
+    {Email: "a@example.com", Name: "Alice"},
+    {Email: "b@example.com", Name: "Bob"},
+  ],
+  id_property: "Email"
+)
+
+# Batch delete
+adapter.batch_delete!(
+  object_type: "tblContacts",
+  crm_ids: ["recAAA", "recBBB", "recCCC"]
+)
+```
+
+> **Rate limiting:** Airtable enforces 5 requests/second/base. Batch operations process up to 10 records per request (vs 1 for single-record calls), increasing effective throughput to 50 records/second.
+
+---
+
 ## Writing your own adapter
 
 Implement the following interface:
@@ -628,6 +702,7 @@ expect(fake_adapter).to have_received(:upsert!).with(
 
 - `Etlify::Adapters::NullAdapter` (default; no-op)
 - `Etlify::Adapters::HubspotV3Adapter` (API v3, with batch support)
+- `Etlify::Adapters::AirtableV0Adapter` (API v0, with batch support)
 
 ---
 
