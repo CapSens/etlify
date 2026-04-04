@@ -10,6 +10,8 @@ module Etlify
       class Client
         API_BASE = "https://api.airtable.com/v0"
 
+        attr_accessor :rate_limiter
+
         def initialize(access_token:, base_id:, http:)
           @access_token = access_token
           @base_id      = base_id
@@ -77,6 +79,8 @@ module Etlify
         private
 
         def request(method, path, body: nil, query: {})
+          @rate_limiter&.throttle!
+
           url = API_BASE + path
           unless query.empty?
             url += "?#{URI.encode_www_form(query)}"

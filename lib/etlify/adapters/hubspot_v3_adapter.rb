@@ -21,6 +21,8 @@ module Etlify
       API_BASE = "https://api.hubapi.com"
       BATCH_MAX_SIZE = 100
 
+      attr_accessor :rate_limiter
+
       # @param access_token [String] HubSpot private app token
       # @param http_client [#request] Optional HTTP client for tests. Signature: request(method, url, headers:, body:)
       def initialize(access_token:, http_client: nil)
@@ -143,6 +145,8 @@ module Etlify
       private
 
       def request(method, path, body: nil, query: {})
+        @rate_limiter&.throttle!
+
         url = API_BASE + path
         url += "?#{URI.encode_www_form(query)}" unless query.empty?
 

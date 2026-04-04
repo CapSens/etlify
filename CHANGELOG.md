@@ -2,6 +2,9 @@
 
 - Feat: Add `AirtableV0Adapter` for Airtable API v0 integration. Supports `upsert!` and `delete!` (standard Etlify interface) plus batch operations: `batch_upsert!` (via Airtable's native `performUpsert`, up to 10 records per request) and `batch_delete!`. Uses `Net::HTTP` (zero external dependency), injectable `http_client:` for testing, and structured error handling via the Etlify error hierarchy.
 - Feat: Add `batch_upsert!` and `batch_delete!` to `HubspotV3Adapter`. Leverages HubSpot's native batch endpoints (`POST /batch/upsert` and `POST /batch/archive`, up to 100 inputs per request). Follows the same interface pattern as `AirtableV0Adapter` batch operations.
+- Feat: Add `BatchSyncJob` — a single job per CRM that processes all stale records sequentially instead of enqueuing one `SyncJob` per record. Includes built-in rate limiting via a new `rate_limit` option on `Etlify::CRM.register` (e.g. `rate_limit: { max_requests: 100, period: 10 }`). The rate limiter is injected at the adapter level (per HTTP request), correctly handling multi-request operations like search + upsert. On `RateLimited` (429), the job re-enqueues itself with the remaining records after a backoff. A cache-based lock ensures only one `BatchSyncJob` runs per CRM at a time. `SyncJob` is kept for individual `model.crm_sync!` calls. `StaleRecords::BatchSync` now enqueues one `BatchSyncJob` per CRM in async mode instead of N `SyncJob` instances.
+- Feat: Add `Etlify::RateLimiter` — sleep-based rate limiter with configurable `max_requests` / `period`. Uses monotonic clock. Includes `NullLimiter` for CRMs without rate limit config.
+- Feat: Adapters now support an optional `rate_limiter=` accessor. When set, each HTTP request calls `throttle!` before executing. Supported on `HubspotV3Adapter` and `AirtableV0Adapter` (via `AirtableV0::Client`).
 
 # V0.9.4
 

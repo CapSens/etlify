@@ -19,6 +19,14 @@ module Etlify
       BATCH_MAX_SIZE = 10
       SAFE_PATH_SEGMENT = /\A[\w\-]+\z/
 
+      def rate_limiter
+        @client.rate_limiter
+      end
+
+      def rate_limiter=(limiter)
+        @client.rate_limiter = limiter
+      end
+
       def initialize(access_token:, base_id:, http_client: nil)
         validate_string!(:access_token, access_token)
         validate_string!(:base_id, base_id)
