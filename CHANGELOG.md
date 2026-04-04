@@ -1,6 +1,7 @@
 # UNRELEASED
 
 - Feat: Add `AirtableV0Adapter` for Airtable API v0 integration. Supports `upsert!` and `delete!` (standard Etlify interface) plus batch operations: `batch_upsert!` (via Airtable's native `performUpsert`, up to 10 records per request) and `batch_delete!`. Uses `Net::HTTP` (zero external dependency), injectable `http_client:` for testing, and structured error handling via the Etlify error hierarchy.
+- Feat: Add `batch_upsert!` and `batch_delete!` to `HubspotV3Adapter`. Leverages HubSpot's native batch endpoints (`POST /batch/upsert` and `POST /batch/archive`, up to 100 inputs per request). Follows the same interface pattern as `AirtableV0Adapter` batch operations.
 
 # V0.9.4
 
