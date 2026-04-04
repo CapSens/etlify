@@ -95,6 +95,49 @@ RSpec.describe Etlify::Adapters::BrevoAdapter do
         id_property: "email"
       )
     end
+
+    it "sends identifierType=ext_id for ext_id lookups" do
+      expect(http).to receive(:request).with(
+        :get,
+        satisfy { |url| url.include?("identifierType=ext_id") },
+        headers: anything,
+        body: nil
+      ).and_return(json_response(200, {id: 77}))
+
+      expect(http).to receive(:request).with(
+        :put, anything, headers: anything, body: anything
+      ).and_return(json_response(204))
+
+      adapter.upsert!(
+        object_type: "contacts",
+        payload: {ext_id: "user-123", FIRSTNAME: "Alice"},
+        id_property: "ext_id"
+      )
+    end
+
+    it "stringifies symbol keys in payload" do
+      expect(http).to receive(:request).with(
+        :get, anything, headers: anything, body: nil
+      ).and_return(json_response(404))
+
+      expect(http).to receive(:request).with(
+        :post,
+        anything,
+        headers: anything,
+        body: satisfy { |b|
+          json = JSON.parse(b)
+          json["email"] == "sym@example.com" &&
+            json["attributes"].is_a?(Hash) &&
+            json["attributes"].key?("FIRSTNAME")
+        }
+      ).and_return(json_response(201, {id: 10}))
+
+      adapter.upsert!(
+        object_type: "contacts",
+        payload: {email: "sym@example.com", FIRSTNAME: "Sym"},
+        id_property: "email"
+      )
+    end
   end
 
   # ------------------------------------------------------------------ #
