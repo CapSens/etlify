@@ -80,6 +80,7 @@ module Etlify
       # Note: if a later slice fails, records from earlier
       # slices are already committed. Callers should handle
       # partial success when processing large batches.
+      # @return [Hash{String => String}] mapping of id_property value to Airtable record ID
       def batch_upsert!(object_type:, records:, id_property:)
         validate_path_segment!(:object_type, object_type)
         validate_present!(:id_property, id_property)
@@ -89,18 +90,19 @@ module Etlify
         end
 
         path = @client.base_path(object_type)
+        prop_key = id_property.to_s
 
-        records.each_slice(BATCH_MAX_SIZE).flat_map do |slice|
+        records.each_slice(BATCH_MAX_SIZE).each_with_object({}) do |slice, mapping|
           body = {
             performUpsert: {
-              fieldsToMergeOn: [id_property.to_s],
+              fieldsToMergeOn: [prop_key],
             },
             records: slice.map { |fields| {fields: stringify_keys(fields)} },
           }
 
           response = @client.patch(path, body: body)
           @client.raise_for_error!(response, path: path)
-          extract_records(response)
+          extract_batch_mapping(response, prop_key).each { |k, v| mapping[k] = v }
         end
       end
 
@@ -197,6 +199,16 @@ module Etlify
       def extract_records(response)
         returned = response[:json].is_a?(Hash) ? response[:json]["records"] : nil
         returned.is_a?(Array) ? returned : []
+      end
+
+      def extract_batch_mapping(response, id_property)
+        records = extract_records(response)
+        records.each_with_object({}) do |r, h|
+          record_id = r["id"].to_s
+          fields = r["fields"] || {}
+          id_value = (fields[id_property] || "").to_s
+          h[id_value] = record_id unless id_value.empty?
+        end
       end
 
       def stringify_keys(hash)

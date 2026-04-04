@@ -93,22 +93,23 @@ module Etlify
       # @param object_type [String] CRM object type
       # @param records [Array<Hash>] Properties hashes (must include the id_property key)
       # @param id_property [String] Unique property for matching (e.g., "email")
-      # @return [Array<String>] hs_object_id strings for each upserted record
+      # @return [Hash{String => String}] mapping of id_property value to hs_object_id
       def batch_upsert!(object_type:, records:, id_property:)
         raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
         raise ArgumentError, "id_property must be provided" if id_property.nil? || id_property.to_s.empty?
         raise ArgumentError, "records must be a non-empty Array" unless records.is_a?(Array) && !records.empty?
 
         path = "/crm/v3/objects/#{object_type}/batch/upsert"
+        prop_key = id_property.to_s
 
-        records.each_slice(BATCH_MAX_SIZE).flat_map do |slice|
+        records.each_slice(BATCH_MAX_SIZE).each_with_object({}) do |slice, mapping|
           body = {
             inputs: slice.map do |record|
               props = stringify_keys(record)
-              id_value = props.delete(id_property.to_s)
+              id_value = props.delete(prop_key)
               {
                 id: id_value.to_s,
-                idProperty: id_property.to_s,
+                idProperty: prop_key,
                 properties: props,
               }
             end,
@@ -116,7 +117,7 @@ module Etlify
 
           resp = request(:post, path, body: body)
           raise_for_error!(resp, path: path)
-          extract_batch_ids(resp)
+          mapping.merge!(extract_batch_mapping(resp, prop_key))
         end
       end
 
@@ -305,11 +306,16 @@ module Etlify
         raise_for_error!(resp, path: path)
       end
 
-      def extract_batch_ids(resp)
+      def extract_batch_mapping(resp, id_property)
         results = resp[:json].is_a?(Hash) ? resp[:json]["results"] : nil
-        return [] unless results.is_a?(Array)
+        return {} unless results.is_a?(Array)
 
-        results.map { |r| r["id"].to_s }
+        results.each_with_object({}) do |r, h|
+          crm_id = r["id"].to_s
+          props = r["properties"] || {}
+          id_value = props[id_property].to_s
+          h[id_value] = crm_id
+        end
       end
 
       def stringify_keys(hash)

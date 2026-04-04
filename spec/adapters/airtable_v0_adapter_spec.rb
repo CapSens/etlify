@@ -654,9 +654,9 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           records: records,
           id_property: "Email"
         )
-        expect(result.size).to eq(2)
-        expect(result.map { |r| r["id"] }).to eq(
-          ["recA", "recC"]
+        expect(result).to eq(
+          "a@b.com" => "recA",
+          "c@d.com" => "recC"
         )
       end
     end
@@ -682,7 +682,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
             status: 200,
             body: {
               records: (1..10).map do |i|
-                {"id" => "rec#{i}", "fields" => {}}
+                {"id" => "rec#{i}", "fields" => {"Email" => "u#{i}@test.com"}}
               end,
             }.to_json,
           }
@@ -703,7 +703,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
             status: 200,
             body: {
               records: (11..12).map do |i|
-                {"id" => "rec#{i}", "fields" => {}}
+                {"id" => "rec#{i}", "fields" => {"Email" => "u#{i}@test.com"}}
               end,
             }.to_json,
           }
@@ -714,6 +714,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           records: records,
           id_property: "Email"
         )
+        expect(result).to be_a(Hash)
         expect(result.size).to eq(12)
       end
     end
@@ -1086,7 +1087,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
     end
 
     context "when batch response is missing records key" do
-      it "batch_upsert! returns empty array",
+      it "batch_upsert! returns empty hash",
          :aggregate_failures do
         expect(http).to receive(:request).with(
           :patch, anything, anything
@@ -1099,7 +1100,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           records: [{Email: "a@b.com"}],
           id_property: "Email"
         )
-        expect(result).to eq([])
+        expect(result).to eq({})
       end
 
       it "batch_delete! returns empty array",
@@ -1294,7 +1295,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         {
           status: 200,
           body: {
-            records: [{"id" => "recSYM", "fields" => {}}],
+            records: [{"id" => "recSYM", "fields" => {"Email" => "a@b.com"}}],
           }.to_json,
         }
       )
@@ -1304,7 +1305,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         records: [{Email: "a@b.com"}],
         id_property: :Email
       )
-      expect(result.first["id"]).to eq("recSYM")
+      expect(result).to eq("a@b.com" => "recSYM")
     end
 
     it "batch raises on 2nd slice after 1st succeeds",

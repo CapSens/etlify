@@ -964,14 +964,14 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           body: {
             status: "COMPLETE",
             results: [
-              {"id" => "101", "properties" => {}},
-              {"id" => "102", "properties" => {}},
+              {"id" => "101", "properties" => {"email" => "john@example.com"}},
+              {"id" => "102", "properties" => {"email" => "jane@example.com"}},
             ],
           }.to_json,
         }
       )
 
-      ids = adapter.batch_upsert!(
+      result = adapter.batch_upsert!(
         object_type: "contacts",
         records: [
           {email: "john@example.com", firstname: "John"},
@@ -979,7 +979,10 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         ],
         id_property: "email"
       )
-      expect(ids).to eq(["101", "102"])
+      expect(result).to eq(
+        "john@example.com" => "101",
+        "jane@example.com" => "102"
+      )
     end
 
     it "slices records into batches of BATCH_MAX_SIZE",
@@ -988,24 +991,28 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         {email: "user#{i}@example.com", firstname: "User#{i}"}
       end
 
+      call_count = 0
       expect(http).to receive(:request).with(
         :post, upsert_url, anything
-      ).twice.and_return(
+      ).twice do
+        call_count += 1
+        email = "user#{call_count}@example.com"
         {
           status: 200,
           body: {
             status: "COMPLETE",
-            results: [{"id" => "1", "properties" => {}}],
+            results: [{"id" => call_count.to_s, "properties" => {"email" => email}}],
           }.to_json,
         }
-      )
+      end
 
-      ids = adapter.batch_upsert!(
+      result = adapter.batch_upsert!(
         object_type: "contacts",
         records: records,
         id_property: "email"
       )
-      expect(ids).to eq(["1", "1"])
+      expect(result).to be_a(Hash)
+      expect(result.size).to eq(2)
     end
 
     it "stringifies symbol keys in records",
@@ -1047,12 +1054,12 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         }
       )
 
-      ids = adapter.batch_upsert!(
+      result = adapter.batch_upsert!(
         object_type: "p12345_myobject",
         records: [{"ref" => "ABC", "name" => "Test"}],
         id_property: "ref"
       )
-      expect(ids).to eq(["42"])
+      expect(result).to be_a(Hash)
     end
 
     it "raises ArgumentError on invalid arguments",

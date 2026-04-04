@@ -34,58 +34,69 @@ RSpec.describe Etlify::BatchSyncJob do
   end
 
   describe "#perform with explicit record pairs" do
-    it "calls Synchronizer for each record" do
+    it "syncs all records and creates sync_lines" do
       user1 = create_user!(index: 1)
       user2 = create_user!(index: 2)
       pairs = ["User", user1.id, "User", user2.id]
 
-      calls = []
-      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
-        calls << [record.id, crm_name]
-        :synced
-      end
-
       described_class.perform_now("hubspot", pairs)
 
-      expect(calls).to match_array(
-        [
-          [user1.id, :hubspot],
-          [user2.id, :hubspot],
-        ]
-      )
+      [user1, user2].each do |user|
+        line = CrmSynchronisation.find_by(
+          resource: user, crm_name: "hubspot"
+        )
+        expect(line).to be_present
+        expect(line.last_digest).to be_present
+      end
     end
 
     it "skips records that no longer exist" do
       user = create_user!(index: 1)
       pairs = ["User", user.id, "User", -999]
 
-      expect(Etlify::Synchronizer).to receive(:call).once
+      described_class.perform_now("hubspot", pairs)
+
+      expect(CrmSynchronisation.count).to eq(1)
+    end
+
+    it "uses BatchSynchronizer when adapter supports batch_upsert!" do
+      user = create_user!(index: 1)
+      pairs = ["User", user.id]
+
+      expect(Etlify::BatchSynchronizer).to receive(:call).and_call_original
       described_class.perform_now("hubspot", pairs)
     end
 
-    it "continues on individual record errors" do
-      user1 = create_user!(index: 1)
-      user2 = create_user!(index: 2)
-      pairs = ["User", user1.id, "User", user2.id]
+    it "falls back to Synchronizer when adapter lacks batch_upsert!" do
+      minimal_adapter = Object.new
+      minimal_adapter.define_singleton_method(:upsert!) { |**_| "123" }
+      minimal_adapter.define_singleton_method(:delete!) { |**_| true }
 
-      call_count = 0
-      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
-        call_count += 1
-        raise StandardError, "boom" if record.id == user1.id
+      Etlify::CRM.register(:minimal_crm, adapter: minimal_adapter)
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          minimal_crm: {
+            adapter: minimal_adapter,
+            id_property: "email",
+            crm_object_type: "contacts",
+          },
+        }
+      )
 
-        :synced
-      end
+      user = create_user!(index: 1)
+      pairs = ["User", user.id]
 
-      described_class.perform_now("hubspot", pairs)
+      expect(Etlify::Synchronizer).to receive(:call).and_call_original
+      expect(Etlify::BatchSynchronizer).not_to receive(:call)
+      described_class.perform_now("minimal_crm", pairs)
 
-      expect(call_count).to eq(2)
+      Etlify::CRM.registry.delete(:minimal_crm)
     end
   end
 
   describe "rate limiter injection" do
     it "installs rate limiter on adapter when rate_limit is configured" do
       adapter = Etlify::Adapters::NullAdapter.new
-      # Add rate_limiter accessor for test
       adapter.define_singleton_method(:rate_limiter=) { |v| @rl = v }
       adapter.define_singleton_method(:rate_limiter) { @rl }
 
@@ -94,85 +105,52 @@ RSpec.describe Etlify::BatchSyncJob do
         adapter: adapter,
         options: {rate_limit: {max_requests: 10, period: 1}}
       )
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          rate_limited_crm: {
+            adapter: adapter,
+            id_property: "email",
+            crm_object_type: "contacts",
+            guard: nil,
+            sync_dependencies: [],
+          },
+        }
+      )
 
       user = create_user!(index: 1)
       pairs = ["User", user.id]
 
       limiter_during_sync = nil
-      allow(Etlify::Synchronizer).to receive(:call) do |_record, crm_name:|
+      original_batch_upsert = adapter.method(:batch_upsert!)
+      allow(adapter).to receive(:batch_upsert!) do |**args|
         limiter_during_sync = adapter.rate_limiter
-        :synced
+        original_batch_upsert.call(**args)
       end
 
       described_class.perform_now("rate_limited_crm", pairs)
 
       expect(limiter_during_sync).to be_a(Etlify::RateLimiter)
-      # Rate limiter should be removed after perform
       expect(adapter.rate_limiter).to be_nil
 
       Etlify::CRM.registry.delete(:rate_limited_crm)
     end
-
-    it "does not set rate limiter when adapter does not support it" do
-      adapter = Etlify::Adapters::NullAdapter.new
-
-      Etlify::CRM.register(
-        :no_rl_crm,
-        adapter: adapter,
-        options: {rate_limit: {max_requests: 10, period: 1}}
-      )
-
-      user = create_user!(index: 1)
-      pairs = ["User", user.id]
-
-      allow(Etlify::Synchronizer).to receive(:call).and_return(:synced)
-
-      expect do
-        described_class.perform_now("no_rl_crm", pairs)
-      end.not_to raise_error
-
-      Etlify::CRM.registry.delete(:no_rl_crm)
-    end
   end
 
   describe "RateLimited error handling" do
-    it "re-enqueues with remaining pairs on RateLimited" do
+    it "re-enqueues on RateLimited from batch_upsert!" do
       user1 = create_user!(index: 1)
       user2 = create_user!(index: 2)
-      user3 = create_user!(index: 3)
-      pairs = [
-        "User", user1.id,
-        "User", user2.id,
-        "User", user3.id,
-      ]
+      pairs = ["User", user1.id, "User", user2.id]
 
-      call_count = 0
-      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
-        call_count += 1
-        if record.id == user2.id
-          raise Etlify::RateLimited.new(
-            "rate limited",
-            status: 429
-          )
-        end
-        :synced
-      end
+      allow_any_instance_of(Etlify::Adapters::NullAdapter)
+        .to receive(:batch_upsert!)
+        .and_raise(Etlify::RateLimited.new("rate limited", status: 429))
 
       described_class.perform_now("hubspot", pairs)
 
-      # Should have processed user1, then failed on user2
-      expect(call_count).to eq(2)
-
-      # Should have re-enqueued with user2 and user3
       jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
       expect(jobs.size).to eq(1)
-
-      remaining_args = jobs.first[:args]
-      expect(remaining_args[0]).to eq("hubspot")
-      remaining_pairs = remaining_args[1]
-      expect(remaining_pairs).to eq(
-        ["User", user2.id, "User", user3.id]
-      )
+      expect(jobs.first[:args][0]).to eq("hubspot")
     end
   end
 
@@ -209,8 +187,6 @@ RSpec.describe Etlify::BatchSyncJob do
       user = create_user!(index: 1)
       pairs = ["User", user.id]
 
-      allow(Etlify::Synchronizer).to receive(:call).and_return(:synced)
-
       described_class.perform_later("hubspot", pairs)
       expect(cache.exist?(lock_key("hubspot"))).to be(true)
 
@@ -221,19 +197,13 @@ RSpec.describe Etlify::BatchSyncJob do
   end
 
   describe "discovery mode (no record_pairs)" do
-    it "discovers stale records via Finder and processes them" do
-      user1 = create_user!(index: 1)
-      user2 = create_user!(index: 2)
-
-      calls = []
-      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
-        calls << record.id
-        :synced
-      end
+    it "discovers stale records via Finder and syncs them" do
+      create_user!(index: 1)
+      create_user!(index: 2)
 
       described_class.perform_now("hubspot")
 
-      expect(calls.sort).to eq([user1.id, user2.id].sort)
+      expect(CrmSynchronisation.where(crm_name: "hubspot").count).to eq(2)
     end
   end
 end

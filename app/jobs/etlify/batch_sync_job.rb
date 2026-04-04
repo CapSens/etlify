@@ -81,6 +81,35 @@ module Etlify
     end
 
     def process_pairs(pairs, crm_name)
+      adapter = Etlify::CRM.fetch(crm_name).adapter
+
+      if adapter.respond_to?(:batch_upsert!)
+        process_pairs_batch(pairs, crm_name)
+      else
+        process_pairs_sequential(pairs, crm_name)
+      end
+    end
+
+    def process_pairs_batch(pairs, crm_name)
+      # Group by model_name to batch per object_type/serializer
+      groups = pairs.group_by(&:first)
+
+      processed_models = []
+      groups.each do |model_name, model_pairs|
+        ids = model_pairs.map(&:last)
+        records = model_name.constantize.where(id: ids).to_a
+        next if records.empty?
+
+        Etlify::BatchSynchronizer.call(records, crm_name: crm_name)
+        processed_models << model_name
+      rescue Etlify::RateLimited => e
+        remaining = remaining_pairs_from(groups, processed_models, model_name, model_pairs)
+        reenqueue(crm_name, remaining, wait: extract_retry_after(e))
+        break
+      end
+    end
+
+    def process_pairs_sequential(pairs, crm_name)
       pairs.each_with_index do |pair, index|
         model_name, id = pair
         record = model_name.constantize.find_by(id: id)
@@ -95,6 +124,20 @@ module Etlify
       rescue => _e
         next
       end
+    end
+
+    # Build remaining pairs for re-enqueue after a RateLimited error
+    # during batch processing. Includes all pairs from unprocessed
+    # model groups.
+    def remaining_pairs_from(groups, processed_models, current_model, current_pairs)
+      remaining = current_pairs.dup
+      groups.each do |model_name, model_pairs|
+        next if processed_models.include?(model_name)
+        next if model_name == current_model
+
+        remaining.concat(model_pairs)
+      end
+      remaining
     end
 
     def install_rate_limiter!(adapter, registry_item)
