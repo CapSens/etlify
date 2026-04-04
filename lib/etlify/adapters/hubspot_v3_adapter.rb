@@ -1,6 +1,7 @@
 require "json"
 require "uri"
 require "net/http"
+require_relative "default_http"
 
 module Etlify
   module Adapters
@@ -23,7 +24,7 @@ module Etlify
       # @param http_client [#request] Optional HTTP client for tests. Signature: request(method, url, headers:, body:)
       def initialize(access_token:, http_client: nil)
         @access_token = access_token
-        @http         = http_client || DefaultHttp.new
+        @http         = http_client || Etlify::Adapters::DefaultHttp.new
       end
 
       # Upsert by searching on id_property (if provided), otherwise create directly.
@@ -86,31 +87,6 @@ module Etlify
       end
 
       private
-
-      # Simple Net::HTTP client used by default (dependency-free)
-      class DefaultHttp
-        def request(method, url, headers: {}, body: nil)
-          uri  = URI(url)
-          http = Net::HTTP.new(uri.host, uri.port)
-          http.use_ssl = uri.scheme == "https"
-
-          klass = {
-            get: Net::HTTP::Get,
-            post: Net::HTTP::Post,
-            patch: Net::HTTP::Patch,
-            delete: Net::HTTP::Delete,
-          }.fetch(method) { raise ArgumentError, "Unsupported method: #{method.inspect}" }
-
-          req = klass.new(uri.request_uri, headers)
-          req.body = body if body
-
-          res = http.request(req)
-          {status: res.code.to_i, body: res.body}
-        rescue => error
-          # Bubble up transport-level errors to be wrapped by #request
-          raise error
-        end
-      end
 
       def request(method, path, body: nil, query: {})
         url = API_BASE + path

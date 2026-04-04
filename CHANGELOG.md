@@ -1,5 +1,7 @@
 # UNRELEASED
 
+- Feat: Add `AirtableV0Adapter` for Airtable API v0 integration. Supports `upsert!` and `delete!` (standard Etlify interface) plus batch operations: `batch_upsert!` (via Airtable's native `performUpsert`, up to 10 records per request) and `batch_delete!`. Uses `Net::HTTP` (zero external dependency), injectable `http_client:` for testing, and structured error handling via the Etlify error hierarchy.
+
 # V0.9.4
 
 - Feat: Add `stale_scope` option to CRM DSL to restrict which records the `StaleRecords::Finder` considers. Accepts a lambda returning an ActiveRecord scope, applied at SQL level before any record is processed. This prevents unnecessary `CrmSynchronisation` rows for records that `sync_if` would skip. Models that do not specify `stale_scope` are not affected — the Finder behaves exactly as before.
