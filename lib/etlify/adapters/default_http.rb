@@ -1,7 +1,6 @@
-# frozen_string_literal: true
-
 require "net/http"
 require "uri"
+require "openssl"
 
 module Etlify
   module Adapters
@@ -9,10 +8,16 @@ module Etlify
     # Shared across adapters (Airtable, HubSpot, etc.).
     # Signature: request(method, url, headers:, body:) → {status:, body:}
     class DefaultHttp
+      OPEN_TIMEOUT = 5
+      READ_TIMEOUT = 30
+
       def request(method, url, headers: {}, body: nil)
         uri  = URI(url)
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = uri.scheme == "https"
+        http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+        http.open_timeout = OPEN_TIMEOUT
+        http.read_timeout = READ_TIMEOUT
 
         request_class = {
           get: Net::HTTP::Get,

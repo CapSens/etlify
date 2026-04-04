@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 require "rails_helper"
 require "etlify/adapters/airtable_v0_adapter"
 
@@ -951,6 +949,281 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         )
       end.to raise_error(
         Etlify::TransportError, /connection refused/
+      )
+    end
+  end
+
+  describe "edge cases" do
+    let(:table) { "tblContacts" }
+
+    context "when crm_id is whitespace-only" do
+      it "treats as absent and searches by id_property",
+         :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :get, /filterByFormula/, anything
+        ).and_return(
+          {status: 200, body: {records: []}.to_json}
+        )
+
+        expect(http).to receive(:request).with(
+          :post, anything, anything
+        ).and_return(
+          {status: 200, body: {id: "recWS"}.to_json}
+        )
+
+        id = adapter.upsert!(
+          object_type: table,
+          payload: {Email: "a@b.com"},
+          id_property: "Email",
+          crm_id: "   "
+        )
+        expect(id).to eq("recWS")
+      end
+    end
+
+    context "when id_property is provided but absent from payload" do
+      it "creates directly without searching",
+         :aggregate_failures do
+        expect(http).not_to receive(:request).with(
+          :get, anything, anything
+        )
+
+        expect(http).to receive(:request).with(
+          :post, anything, anything
+        ).and_return(
+          {status: 200, body: {id: "recNOKEY"}.to_json}
+        )
+
+        id = adapter.upsert!(
+          object_type: table,
+          payload: {Name: "Test"},
+          id_property: "Email"
+        )
+        expect(id).to eq("recNOKEY")
+      end
+    end
+
+    context "when create returns 2xx but no id in response" do
+      it "raises ApiError", :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :post, anything, anything
+        ).and_return(
+          {status: 200, body: {fields: {}}.to_json}
+        )
+
+        expect do
+          adapter.upsert!(
+            object_type: table,
+            payload: {Name: "NoId"}
+          )
+        end.to raise_error(Etlify::ApiError)
+      end
+    end
+
+    context "when transport layer fails during create" do
+      it "wraps into TransportError", :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :get, /filterByFormula/, anything
+        ).and_return(
+          {status: 200, body: {records: []}.to_json}
+        )
+
+        expect(http).to receive(:request).with(
+          :post, anything, anything
+        ).and_raise(StandardError.new("connection reset"))
+
+        expect do
+          adapter.upsert!(
+            object_type: table,
+            payload: {Email: "a@b.com", Name: "A"},
+            id_property: "Email"
+          )
+        end.to raise_error(
+          Etlify::TransportError, /connection reset/
+        )
+      end
+    end
+
+    context "when search returns 403" do
+      it "raises Unauthorized" do
+        expect(http).to receive(:request).with(
+          :get, /filterByFormula/, anything
+        ).and_return(
+          {
+            status: 403,
+            body: {
+              error: {
+                type: "FORBIDDEN",
+                message: "Access denied",
+              },
+            }.to_json,
+          }
+        )
+
+        expect do
+          adapter.upsert!(
+            object_type: table,
+            payload: {Email: "x@y.com"},
+            id_property: "Email"
+          )
+        end.to raise_error(Etlify::Unauthorized, /Access denied/)
+      end
+    end
+
+    context "when delete! returns 403" do
+      it "raises Unauthorized" do
+        expect(http).to receive(:request).with(
+          :delete, anything, anything
+        ).and_return(
+          {
+            status: 403,
+            body: {
+              error: {
+                type: "FORBIDDEN",
+                message: "No access",
+              },
+            }.to_json,
+          }
+        )
+
+        expect do
+          adapter.delete!(
+            object_type: table, crm_id: "rec1"
+          )
+        end.to raise_error(Etlify::Unauthorized, /No access/)
+      end
+    end
+
+    context "when batch response is missing records key" do
+      it "batch_upsert! returns empty array",
+         :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :patch, anything, anything
+        ).and_return(
+          {status: 200, body: {}.to_json}
+        )
+
+        result = adapter.batch_upsert!(
+          object_type: table,
+          records: [{Email: "a@b.com"}],
+          id_property: "Email"
+        )
+        expect(result).to eq([])
+      end
+
+      it "batch_delete! returns empty array",
+         :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :delete, anything, anything
+        ).and_return(
+          {status: 200, body: {}.to_json}
+        )
+
+        result = adapter.batch_delete!(
+          object_type: table, crm_ids: ["rec1"]
+        )
+        expect(result).to eq([])
+      end
+    end
+
+    context "when batch_upsert! transport fails" do
+      it "wraps into TransportError" do
+        expect(http).to receive(:request).and_raise(
+          StandardError.new("batch timeout")
+        )
+
+        expect do
+          adapter.batch_upsert!(
+            object_type: table,
+            records: [{Email: "a@b.com"}],
+            id_property: "Email"
+          )
+        end.to raise_error(
+          Etlify::TransportError, /batch timeout/
+        )
+      end
+    end
+
+    context "when update returns 409" do
+      it "raises ValidationFailed", :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :get, /filterByFormula/, anything
+        ).and_return(
+          {
+            status: 200,
+            body: {records: [{"id" => "rec9"}]}.to_json,
+          }
+        )
+
+        expect(http).to receive(:request).with(
+          :patch, /rec9/, anything
+        ).and_return(
+          {
+            status: 409,
+            body: {
+              error: {
+                type: "CONFLICT",
+                message: "Record conflict",
+              },
+            }.to_json,
+          }
+        )
+
+        expect do
+          adapter.upsert!(
+            object_type: table,
+            payload: {Email: "x@y.com"},
+            id_property: "Email"
+          )
+        end.to raise_error(
+          Etlify::ValidationFailed, /Record conflict/
+        )
+      end
+    end
+
+    context "when initialize receives non-string types" do
+      it "raises ArgumentError for numeric access_token" do
+        expect do
+          described_class.new(
+            access_token: 12345, base_id: "appXXX"
+          )
+        end.to raise_error(ArgumentError, /access_token/)
+      end
+
+      it "raises ArgumentError for nil base_id" do
+        expect do
+          described_class.new(
+            access_token: "token", base_id: nil
+          )
+        end.to raise_error(ArgumentError, /base_id/)
+      end
+    end
+  end
+
+  describe "formula validation" do
+    let(:table) { "tblContacts" }
+
+    it "rejects field names with special characters" do
+      expect do
+        adapter.upsert!(
+          object_type: table,
+          payload: {"} = 1) OR 1=1; //" => "hack"},
+          id_property: "} = 1) OR 1=1; //"
+        )
+      end.to raise_error(
+        ArgumentError, /Invalid Airtable field name/
+      )
+    end
+
+    it "rejects non-scalar formula values" do
+      expect do
+        adapter.upsert!(
+          object_type: table,
+          payload: {Email: ["a@b.com"]},
+          id_property: "Email"
+        )
+      end.to raise_error(
+        ArgumentError, /Formula value must be/
       )
     end
   end

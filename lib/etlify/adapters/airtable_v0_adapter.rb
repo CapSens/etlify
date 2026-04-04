@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 require_relative "default_http"
 require_relative "airtable_v0/client"
 require_relative "airtable_v0/formula"
@@ -128,12 +126,19 @@ module Etlify
       def create_record(object_type, payload)
         path = @client.base_path(object_type)
         response = @client.post(path, body: {fields: stringify_keys(payload)})
+        @client.raise_for_error!(response, path: path)
 
-        if response[:status].between?(200, 299) && response[:json].is_a?(Hash) && response[:json]["id"]
-          return response[:json]["id"].to_s
+        record_id = response[:json].is_a?(Hash) && response[:json]["id"]
+
+        unless record_id
+          raise Etlify::ApiError.new(
+            "Airtable create succeeded but returned no record id (path=#{path})",
+            status: response[:status],
+            raw: response[:body]
+          )
         end
 
-        @client.raise_for_error!(response, path: path)
+        record_id.to_s
       end
 
       def update_record(object_type, record_id, payload)
