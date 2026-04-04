@@ -106,9 +106,8 @@ module Etlify
           body = {
             inputs: slice.map do |record|
               props = stringify_keys(record)
-              id_value = props.delete(prop_key)
               {
-                id: id_value.to_s,
+                id: props[prop_key].to_s,
                 idProperty: prop_key,
                 properties: props,
               }
@@ -314,7 +313,7 @@ module Etlify
           crm_id = r["id"].to_s
           props = r["properties"] || {}
           id_value = props[id_property].to_s
-          h[id_value] = crm_id
+          h[id_value] = crm_id unless id_value.empty?
         end
       end
 

@@ -953,10 +953,10 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           inputs.size == 2 &&
             inputs[0]["id"] == "john@example.com" &&
             inputs[0]["idProperty"] == "email" &&
-            inputs[0]["properties"] == {"firstname" => "John"} &&
+            inputs[0]["properties"] == {"email" => "john@example.com", "firstname" => "John"} &&
             inputs[1]["id"] == "jane@example.com" &&
             inputs[1]["idProperty"] == "email" &&
-            inputs[1]["properties"] == {"firstname" => "Jane"}
+            inputs[1]["properties"] == {"email" => "jane@example.com", "firstname" => "Jane"}
         }
       ).and_return(
         {
