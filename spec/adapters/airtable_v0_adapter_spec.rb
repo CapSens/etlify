@@ -4,6 +4,7 @@ require "etlify/adapters/airtable_v0_adapter"
 RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   let(:token)   { "pat-test-token" }
   let(:base_id) { "appTEST123456" }
+  let(:table)   { "tblContacts" }
   let(:http)    { instance_double("HttpClient") }
 
   subject(:adapter) do
@@ -29,8 +30,6 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   end
 
   describe "#upsert!" do
-    let(:table) { "tblContacts" }
-
     context "when record exists (search by id_property)" do
       it "PATCHes the record and returns its id",
          :aggregate_failures do
@@ -489,8 +488,6 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   end
 
   describe "#delete!" do
-    let(:table) { "tblContacts" }
-
     it "returns true on 2xx response" do
       expect(http).to receive(:request).with(
         :delete,
@@ -611,8 +608,6 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   end
 
   describe "#batch_upsert!" do
-    let(:table) { "tblContacts" }
-
     context "with a single batch (<= 10 records)" do
       it "sends one PATCH with performUpsert and returns records",
          :aggregate_failures do
@@ -797,8 +792,6 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   end
 
   describe "#batch_delete!" do
-    let(:table) { "tblContacts" }
-
     context "with a single batch (<= 10 IDs)" do
       it "sends one DELETE and returns results",
          :aggregate_failures do
@@ -954,8 +947,6 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   end
 
   describe "edge cases" do
-    let(:table) { "tblContacts" }
-
     context "when crm_id is whitespace-only" do
       it "treats as absent and searches by id_property",
          :aggregate_failures do
@@ -1201,8 +1192,6 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   end
 
   describe "formula validation" do
-    let(:table) { "tblContacts" }
-
     it "rejects field names with special characters" do
       expect do
         adapter.upsert!(
@@ -1225,6 +1214,145 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       end.to raise_error(
         ArgumentError, /Formula value must be/
       )
+    end
+  end
+
+  describe "path traversal protection" do
+    it "rejects object_type with path traversal" do
+      expect do
+        adapter.upsert!(
+          object_type: "../etc/passwd",
+          payload: {Name: "hack"}
+        )
+      end.to raise_error(
+        ArgumentError, /object_type.*safe path segment/
+      )
+    end
+
+    it "rejects crm_id with path traversal" do
+      expect do
+        adapter.delete!(
+          object_type: table, crm_id: "../../secret"
+        )
+      end.to raise_error(
+        ArgumentError, /crm_id.*safe path segment/
+      )
+    end
+
+    it "accepts valid Airtable record IDs" do
+      expect(http).to receive(:request).with(
+        :delete, anything, anything
+      ).and_return({status: 200, body: "{}"})
+
+      expect(
+        adapter.delete!(
+          object_type: table, crm_id: "recABC123xyz"
+        )
+      ).to be true
+    end
+  end
+
+  describe "backslash escaping in formulas" do
+    it "escapes backslashes in formula values" do
+      expect(http).to receive(:request).with(
+        :get,
+        satisfy do |url|
+          decoded = URI.decode_www_form_component(url)
+          decoded.include?('{Name} = "back\\\\slash"')
+        end,
+        anything
+      ).and_return(
+        {status: 200, body: {records: []}.to_json}
+      )
+
+      expect(http).to receive(:request).with(
+        :post, anything, anything
+      ).and_return(
+        {status: 200, body: {id: "recBS"}.to_json}
+      )
+
+      adapter.upsert!(
+        object_type: table,
+        payload: {Name: 'back\\slash'},
+        id_property: "Name"
+      )
+    end
+  end
+
+  describe "batch edge cases" do
+    it "batch_upsert! accepts id_property as Symbol",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :patch,
+        anything,
+        headers: anything,
+        body: satisfy do |body|
+          json = JSON.parse(body)
+          json["performUpsert"]["fieldsToMergeOn"] == ["Email"]
+        end
+      ).and_return(
+        {
+          status: 200,
+          body: {
+            records: [{"id" => "recSYM", "fields" => {}}],
+          }.to_json,
+        }
+      )
+
+      result = adapter.batch_upsert!(
+        object_type: table,
+        records: [{Email: "a@b.com"}],
+        id_property: :Email
+      )
+      expect(result.first["id"]).to eq("recSYM")
+    end
+
+    it "batch raises on 2nd slice after 1st succeeds",
+       :aggregate_failures do
+      records = (1..12).map do |i|
+        {Email: "u#{i}@test.com"}
+      end
+
+      # 1st slice succeeds
+      expect(http).to receive(:request).with(
+        :patch, anything,
+        headers: anything,
+        body: satisfy { |b| JSON.parse(b)["records"].size == 10 }
+      ).and_return(
+        {
+          status: 200,
+          body: {
+            records: (1..10).map do |i|
+              {"id" => "rec#{i}", "fields" => {}}
+            end,
+          }.to_json,
+        }
+      )
+
+      # 2nd slice rate limited
+      expect(http).to receive(:request).with(
+        :patch, anything,
+        headers: anything,
+        body: satisfy { |b| JSON.parse(b)["records"].size == 2 }
+      ).and_return(
+        {
+          status: 429,
+          body: {
+            error: {
+              type: "RATE_LIMIT_REACHED",
+              message: "Too many requests",
+            },
+          }.to_json,
+        }
+      )
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: table,
+          records: records,
+          id_property: "Email"
+        )
+      end.to raise_error(Etlify::RateLimited)
     end
   end
 end

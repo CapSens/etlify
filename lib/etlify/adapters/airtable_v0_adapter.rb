@@ -17,6 +17,7 @@ module Etlify
     #   adapter.batch_delete!(object_type: "tblXXX", crm_ids: ["recAAA", "recBBB"])
     class AirtableV0Adapter
       BATCH_MAX_SIZE = 10
+      SAFE_PATH_SEGMENT = /\A[\w\-]+\z/
 
       def initialize(access_token:, base_id:, http_client: nil)
         validate_string!(:access_token, access_token)
@@ -31,8 +32,13 @@ module Etlify
 
       # --- Standard Etlify interface ---
 
+      # Note: unlike HubSpot, id_property is kept in the
+      # payload because Airtable requires the field in
+      # `fields` for both create and update operations.
+      # For bulk operations, prefer batch_upsert! which uses
+      # Airtable's native performUpsert (up to 10 rec/req).
       def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
-        validate_string!(:object_type, object_type)
+        validate_path_segment!(:object_type, object_type)
         raise ArgumentError, "payload must be a Hash" unless payload.is_a?(Hash)
 
         properties = payload.dup
@@ -49,8 +55,8 @@ module Etlify
       end
 
       def delete!(object_type:, crm_id:)
-        validate_string!(:object_type, object_type)
-        validate_present!(:crm_id, crm_id)
+        validate_path_segment!(:object_type, object_type)
+        validate_path_segment!(:crm_id, crm_id)
 
         path = "#{@client.base_path(object_type)}/#{crm_id}"
         response = @client.delete(path)
@@ -63,8 +69,11 @@ module Etlify
 
       # --- Batch operations (Airtable-specific) ---
 
+      # Note: if a later slice fails, records from earlier
+      # slices are already committed. Callers should handle
+      # partial success when processing large batches.
       def batch_upsert!(object_type:, records:, id_property:)
-        validate_string!(:object_type, object_type)
+        validate_path_segment!(:object_type, object_type)
         validate_present!(:id_property, id_property)
         unless records.is_a?(Array) && !records.empty?
           raise ArgumentError,
@@ -87,8 +96,11 @@ module Etlify
         end
       end
 
+      # Note: if a later slice fails, records from earlier
+      # slices are already deleted. Callers should handle
+      # partial success when processing large batches.
       def batch_delete!(object_type:, crm_ids:)
-        validate_string!(:object_type, object_type)
+        validate_path_segment!(:object_type, object_type)
         unless crm_ids.is_a?(Array) && !crm_ids.empty?
           raise ArgumentError,
                 "crm_ids must be a non-empty Array"
@@ -194,6 +206,13 @@ module Etlify
         return unless value.nil? || value.to_s.empty?
 
         raise ArgumentError, "#{name} must be provided"
+      end
+
+      def validate_path_segment!(name, value)
+        return if value.is_a?(String) && value.match?(SAFE_PATH_SEGMENT)
+
+        raise ArgumentError,
+              "#{name} must be a safe path segment (got #{value.inspect})"
       end
     end
   end
