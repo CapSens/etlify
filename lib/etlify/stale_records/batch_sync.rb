@@ -1,8 +1,8 @@
 module Etlify
   module StaleRecords
     # BatchSync: enqueue or perform sync for all stale records discovered by
-    # Finder. It only loads full records when running in synchronous mode to
-    # keep memory usage low; in async mode it enqueues jobs by id.
+    # Finder. In async mode it enqueues a single BatchSyncJob per CRM;
+    # in sync mode it loads records and syncs inline.
     class BatchSync
       DEFAULT_BATCH_SIZE = 1_000
 
@@ -37,6 +37,8 @@ module Etlify
 
       def call
         stats = {total: 0, per_model: {}, errors: 0}
+        # In async mode, accumulate pairs per CRM for batch enqueue
+        pending_pairs = Hash.new { |h, k| h[k] = [] } if @async
 
         # Finder returns: { ModelClass => { crm_sym => relation(ids-only) } }
         Finder.call(models: @models, crm_name: @crm_name).each do |model, per_crm|
@@ -44,9 +46,15 @@ module Etlify
           model_errors = 0
 
           per_crm.each do |crm, relation|
-            processed = process_model(model, relation, crm_name: crm)
-            model_count  += processed[:count]
-            model_errors += processed[:errors]
+            if @async
+              ids = collect_ids(model, relation)
+              ids.each { |id| pending_pairs[crm] << [model.name, id] }
+              model_count += ids.size
+            else
+              processed = process_model_sync(model, relation, crm_name: crm)
+              model_count  += processed[:count]
+              model_errors += processed[:errors]
+            end
           end
 
           stats[:per_model][model.name] = model_count
@@ -54,59 +62,71 @@ module Etlify
           stats[:errors] += model_errors
         end
 
+        enqueue_batch_jobs(pending_pairs) if @async
+
         stats
       end
 
       private
 
-      # Process one model's stale relation (ids-only relation) for a given CRM.
-      def process_model(model, relation, crm_name:)
-        count  = 0
-        errors = 0
-        pk     = model.primary_key.to_sym
+      # Collect all IDs for a model's stale relation without loading records.
+      def collect_ids(model, relation)
+        ids = []
+        pk = model.primary_key.to_sym
         base_scope = model.unscoped.where(pk => relation)
 
         base_scope.in_batches(of: @batch_size) do |batch_rel|
+          ids.concat(batch_rel.pluck(pk))
+        end
+
+        ids
+      end
+
+      # Process one model's stale relation inline (sync mode).
+      def process_model_sync(model, relation, crm_name:)
+        count  = 0
+        errors = 0
+        pk     = model.primary_key.to_sym
+
+        scope = model.unscoped.where(pk => relation)
+        scope.in_batches(of: @batch_size) do |batch_rel|
           ids = batch_rel.pluck(pk)
           next if ids.empty?
 
-          if @async
-            enqueue_async(model, ids, crm_name: crm_name)
-            count += ids.size
-          else
-            # Inline: load and apply guard before syncing
-            model.where(pk => ids).find_each(batch_size: @batch_size) do |rec|
-              conf  = rec.class.etlify_crms.fetch(crm_name.to_sym)
-              guard = conf[:guard]
-              next if guard && !guard.call(rec)
+          model.where(pk => ids).find_each(batch_size: @batch_size) do |rec|
+            conf  = rec.class.etlify_crms.fetch(crm_name.to_sym)
+            guard = conf[:guard]
+            next if guard && !guard.call(rec)
 
-              service = Etlify::Synchronizer.call(rec, crm_name: crm_name)
-              count += 1
-              errors += 1 if service == :error
-            end
+            service = Etlify::Synchronizer.call(rec, crm_name: crm_name)
+            count += 1
+            errors += 1 if service == :error
           end
         end
 
         {count: count, errors: errors}
       end
 
-      # Enqueue one job per id without loading the records.
-      def enqueue_async(model, ids, crm_name:)
-        job_class = job_class_for(crm_name)
-        ids.each do |id|
-          job_class.perform_later(model.name, id, crm_name.to_s)
+      # Enqueue one BatchSyncJob per CRM with all collected pairs.
+      def enqueue_batch_jobs(pending_pairs)
+        pending_pairs.each do |crm, pairs|
+          next if pairs.empty?
+
+          job_class = job_class_for(crm)
+          flat_pairs = pairs.flatten
+          job_class.perform_later(crm.to_s, flat_pairs)
         end
       end
 
-      # Returns the job class to use for enqueuing sync jobs.
+      # Returns the job class to use for enqueuing batch sync jobs.
       # Uses the custom job_class from CRM options if defined,
-      # otherwise falls back to Etlify::SyncJob.
+      # otherwise falls back to Etlify::BatchSyncJob.
       def job_class_for(crm_name)
         crm_config = Etlify::CRM.registry[crm_name.to_sym]
-        return Etlify::SyncJob unless crm_config
+        return Etlify::BatchSyncJob unless crm_config
 
         custom_class = crm_config.options[:job_class]
-        return Etlify::SyncJob unless custom_class
+        return Etlify::BatchSyncJob unless custom_class
 
         custom_class.constantize
       end

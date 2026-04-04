@@ -8,9 +8,11 @@ require_relative "etlify/version"
 require_relative "etlify/config"
 require_relative "etlify/error"
 require_relative "etlify/digest"
+require_relative "etlify/rate_limiter"
 require_relative "etlify/crm"
 require_relative "etlify/model"
 require_relative "etlify/synchronizer"
+require_relative "etlify/batch_synchronizer"
 require_relative "etlify/deleter"
 require_relative "etlify/stale_records/finder"
 require_relative "etlify/stale_records/batch_sync"
@@ -34,5 +36,6 @@ module Etlify
 end
 
 require_relative "../app/jobs/etlify/sync_job"
+require_relative "../app/jobs/etlify/batch_sync_job"
 require_relative "etlify/railtie"
 require_relative "etlify/engine"
