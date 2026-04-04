@@ -1,8 +1,8 @@
-# UPGRADING FROM 0.9.4 -> 0.9.5
+# UPGRADING FROM 0.9.4 -> 0.10.0
 
 ## 1. Overview
 
-Etlify 0.9.5 introduces batch synchronization with built-in rate limiting:
+Etlify 0.10.0 introduces batch synchronization with built-in rate limiting:
 
 **New features:**
 
