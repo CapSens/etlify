@@ -452,6 +452,34 @@ class Subscription < ApplicationRecord
 end
 ```
 
+### Batch operations
+
+The HubSpot adapter provides two additional methods for bulk operations, using HubSpot's native batch endpoints (up to 100 inputs per request, auto-sliced):
+
+```ruby
+adapter = Etlify::CRM.registry[:hubspot].adapter
+
+# Batch upsert via HubSpot's native /batch/upsert
+# Returns an Array of hs_object_id strings
+adapter.batch_upsert!(
+  object_type: "contacts",
+  records: [
+    {email: "a@example.com", firstname: "Alice"},
+    {email: "b@example.com", firstname: "Bob"},
+  ],
+  id_property: "email"
+)
+
+# Batch delete (archive) via /batch/archive
+# Returns true
+adapter.batch_delete!(
+  object_type: "contacts",
+  crm_ids: ["101", "102", "103"]
+)
+```
+
+> **Rate limiting:** HubSpot enforces rate limits per private app. Batch operations process up to 100 records per request (vs 1 for single-record calls), significantly reducing the number of API calls.
+
 ---
 
 ## Airtable adapter (API v0)
@@ -633,7 +661,7 @@ expect(fake_adapter).to have_received(:upsert!).with(
 ## Adapters included
 
 - `Etlify::Adapters::NullAdapter` (default; no-op)
-- `Etlify::Adapters::HubspotV3Adapter` (API v3)
+- `Etlify::Adapters::HubspotV3Adapter` (API v3, with batch support)
 - `Etlify::Adapters::AirtableV0Adapter` (API v0, with batch support)
 
 ---

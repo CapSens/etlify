@@ -937,4 +937,336 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       end.to raise_error(Etlify::TransportError, /network oops/)
     end
   end
+
+  describe "#batch_upsert!" do
+    let(:upsert_url) { "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert" }
+
+    it "POSTs to batch/upsert and returns IDs",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :post,
+        upsert_url,
+        headers: hash_including("Authorization" => "Bearer #{token}"),
+        body: satisfy { |body|
+          json = JSON.parse(body)
+          inputs = json["inputs"]
+          inputs.size == 2 &&
+            inputs[0]["id"] == "john@example.com" &&
+            inputs[0]["idProperty"] == "email" &&
+            inputs[0]["properties"] == {"firstname" => "John"} &&
+            inputs[1]["id"] == "jane@example.com" &&
+            inputs[1]["idProperty"] == "email" &&
+            inputs[1]["properties"] == {"firstname" => "Jane"}
+        }
+      ).and_return(
+        {
+          status: 200,
+          body: {
+            status: "COMPLETE",
+            results: [
+              {"id" => "101", "properties" => {}},
+              {"id" => "102", "properties" => {}},
+            ],
+          }.to_json,
+        }
+      )
+
+      ids = adapter.batch_upsert!(
+        object_type: "contacts",
+        records: [
+          {email: "john@example.com", firstname: "John"},
+          {email: "jane@example.com", firstname: "Jane"},
+        ],
+        id_property: "email"
+      )
+      expect(ids).to eq(["101", "102"])
+    end
+
+    it "slices records into batches of BATCH_MAX_SIZE",
+       :aggregate_failures do
+      records = (1..150).map do |i|
+        {email: "user#{i}@example.com", firstname: "User#{i}"}
+      end
+
+      expect(http).to receive(:request).with(
+        :post, upsert_url, anything
+      ).twice.and_return(
+        {
+          status: 200,
+          body: {
+            status: "COMPLETE",
+            results: [{"id" => "1", "properties" => {}}],
+          }.to_json,
+        }
+      )
+
+      ids = adapter.batch_upsert!(
+        object_type: "contacts",
+        records: records,
+        id_property: "email"
+      )
+      expect(ids).to eq(["1", "1"])
+    end
+
+    it "stringifies symbol keys in records",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :post,
+        upsert_url,
+        headers: anything,
+        body: satisfy { |body|
+          json = JSON.parse(body)
+          props = json["inputs"].first["properties"]
+          props.keys.all? { |k| k.is_a?(String) }
+        }
+      ).and_return(
+        {
+          status: 200,
+          body: {
+            results: [{"id" => "1"}],
+          }.to_json,
+        }
+      )
+
+      adapter.batch_upsert!(
+        object_type: "contacts",
+        records: [{email: "a@b.com", firstname: "A"}],
+        id_property: "email"
+      )
+    end
+
+    it "works with custom object types" do
+      custom_url = "https://api.hubapi.com/crm/v3/objects/p12345_myobject/batch/upsert"
+
+      expect(http).to receive(:request).with(
+        :post, custom_url, anything
+      ).and_return(
+        {
+          status: 200,
+          body: {results: [{"id" => "42"}]}.to_json,
+        }
+      )
+
+      ids = adapter.batch_upsert!(
+        object_type: "p12345_myobject",
+        records: [{"ref" => "ABC", "name" => "Test"}],
+        id_property: "ref"
+      )
+      expect(ids).to eq(["42"])
+    end
+
+    it "raises ArgumentError on invalid arguments",
+       :aggregate_failures do
+      expect do
+        adapter.batch_upsert!(
+          object_type: "",
+          records: [{}],
+          id_property: "email"
+        )
+      end.to raise_error(ArgumentError, /object_type/)
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          records: [{}],
+          id_property: nil
+        )
+      end.to raise_error(ArgumentError, /id_property/)
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          records: "not array",
+          id_property: "email"
+        )
+      end.to raise_error(ArgumentError, /records/)
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          records: [],
+          id_property: "email"
+        )
+      end.to raise_error(ArgumentError, /records/)
+    end
+
+    it "raises Unauthorized on 401" do
+      expect(http).to receive(:request).and_return(
+        {
+          status: 401,
+          body: {
+            message: "Invalid token",
+            category: "INVALID_AUTHENTICATION",
+          }.to_json,
+        }
+      )
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          records: [{email: "a@b.com"}],
+          id_property: "email"
+        )
+      end.to raise_error(Etlify::Unauthorized, /Invalid token/)
+    end
+
+    it "raises RateLimited on 429" do
+      expect(http).to receive(:request).and_return(
+        {
+          status: 429,
+          body: {
+            message: "Too many requests",
+            category: "RATE_LIMITS",
+          }.to_json,
+        }
+      )
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          records: [{email: "a@b.com"}],
+          id_property: "email"
+        )
+      end.to raise_error(Etlify::RateLimited, /Too many requests/)
+    end
+
+    it "raises ApiError on 500" do
+      expect(http).to receive(:request).and_return(
+        {status: 500, body: {message: "Server down"}.to_json}
+      )
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          records: [{email: "a@b.com"}],
+          id_property: "email"
+        )
+      end.to raise_error(Etlify::ApiError, /Server down/)
+    end
+
+    it "wraps transport errors into TransportError" do
+      expect(http).to receive(:request).and_raise(
+        StandardError.new("connection reset")
+      )
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          records: [{email: "a@b.com"}],
+          id_property: "email"
+        )
+      end.to raise_error(Etlify::TransportError, /connection reset/)
+    end
+  end
+
+  describe "#batch_delete!" do
+    let(:archive_url) { "https://api.hubapi.com/crm/v3/objects/contacts/batch/archive" }
+
+    it "POSTs to batch/archive and returns true",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :post,
+        archive_url,
+        headers: hash_including("Authorization" => "Bearer #{token}"),
+        body: satisfy { |body|
+          json = JSON.parse(body)
+          json["inputs"] == [
+            {"id" => "101"},
+            {"id" => "102"},
+            {"id" => "103"},
+          ]
+        }
+      ).and_return({status: 204, body: ""})
+
+      result = adapter.batch_delete!(
+        object_type: "contacts",
+        crm_ids: ["101", "102", "103"]
+      )
+      expect(result).to be true
+    end
+
+    it "slices crm_ids into batches of BATCH_MAX_SIZE",
+       :aggregate_failures do
+      ids = (1..150).map(&:to_s)
+
+      expect(http).to receive(:request).with(
+        :post, archive_url, anything
+      ).twice.and_return({status: 204, body: ""})
+
+      result = adapter.batch_delete!(
+        object_type: "contacts",
+        crm_ids: ids
+      )
+      expect(result).to be true
+    end
+
+    it "raises ArgumentError on invalid arguments",
+       :aggregate_failures do
+      expect do
+        adapter.batch_delete!(
+          object_type: "",
+          crm_ids: ["1"]
+        )
+      end.to raise_error(ArgumentError, /object_type/)
+
+      expect do
+        adapter.batch_delete!(
+          object_type: "contacts",
+          crm_ids: "not array"
+        )
+      end.to raise_error(ArgumentError, /crm_ids/)
+
+      expect do
+        adapter.batch_delete!(
+          object_type: "contacts",
+          crm_ids: []
+        )
+      end.to raise_error(ArgumentError, /crm_ids/)
+    end
+
+    it "raises Unauthorized on 401" do
+      expect(http).to receive(:request).and_return(
+        {
+          status: 401,
+          body: {
+            message: "Invalid token",
+            category: "INVALID_AUTHENTICATION",
+          }.to_json,
+        }
+      )
+
+      expect do
+        adapter.batch_delete!(
+          object_type: "contacts",
+          crm_ids: ["1"]
+        )
+      end.to raise_error(Etlify::Unauthorized, /Invalid token/)
+    end
+
+    it "raises ApiError on 500" do
+      expect(http).to receive(:request).and_return(
+        {status: 500, body: {message: "Server down"}.to_json}
+      )
+
+      expect do
+        adapter.batch_delete!(
+          object_type: "contacts",
+          crm_ids: ["1"]
+        )
+      end.to raise_error(Etlify::ApiError, /Server down/)
+    end
+
+    it "wraps transport errors into TransportError" do
+      expect(http).to receive(:request).and_raise(
+        StandardError.new("dns failure")
+      )
+
+      expect do
+        adapter.batch_delete!(
+          object_type: "contacts",
+          crm_ids: ["1"]
+        )
+      end.to raise_error(Etlify::TransportError, /dns failure/)
+    end
+  end
 end
