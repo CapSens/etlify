@@ -536,7 +536,7 @@ Etlify.configure do |config|
       base_id: ENV["AIRTABLE_BASE_ID"]
     ),
     options: {
-      rate_limit: { max_requests: 5, period: 1 },
+      rate_limit: { max_requests: 5, period: 1 }, # seconds
     }
   )
 end

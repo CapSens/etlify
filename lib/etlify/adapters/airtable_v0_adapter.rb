@@ -218,8 +218,7 @@ module Etlify
       def validate_string!(name, value)
         return if value.is_a?(String) && !value.empty?
 
-        raise ArgumentError,
-              "#{name} must be a non-empty String"
+        raise ArgumentError, "#{name} must be a non-empty String"
       end
 
       def validate_present!(name, value)
@@ -231,8 +230,7 @@ module Etlify
       def validate_path_segment!(name, value)
         return if value.is_a?(String) && value.match?(SAFE_PATH_SEGMENT)
 
-        raise ArgumentError,
-              "#{name} must be a safe path segment (got #{value.inspect})"
+        raise ArgumentError, "#{name} must be a safe path segment (got #{value.inspect})"
       end
     end
   end
