@@ -97,7 +97,7 @@ module Etlify
       def batch_upsert!(object_type:, records:, id_property:)
         raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
         raise ArgumentError, "id_property must be provided" if id_property.nil? || id_property.to_s.empty?
-        raise ArgumentError, "records must be a non-empty Array" unless records.is_a?(Array) && !records.empty?
+        raise ArgumentError, "records must be a non-empty Array" if !records.is_a?(Array) || records.empty?
 
         path = "/crm/v3/objects/#{object_type}/batch/upsert"
         prop_key = id_property.to_s

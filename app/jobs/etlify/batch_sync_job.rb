@@ -60,15 +60,13 @@ module Etlify
         .call(crm_name: crm_name)
         .each do |model, per_crm|
           relation = per_crm[crm_name]
-          next unless relation
+          next if relation.nil?
 
-          pk = model.primary_key.to_sym
-          scope = model.unscoped.where(pk => relation)
-          scope.in_batches(of: MAX_BATCH_SIZE) do |batch_rel|
-              batch_rel.pluck(pk).each do |id|
-                pairs << [model.name, id]
-              end
-            end
+          primary_key = model.primary_key.to_sym
+          model.unscoped
+               .where(primary_key => relation)
+               .pluck(primary_key)
+               .each { |id| pairs << [model.name, id] }
         end
 
       pairs

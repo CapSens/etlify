@@ -36,25 +36,47 @@ module Etlify
       end
 
       def call
-        stats = {total: 0, per_model: {}, errors: 0}
-        # In async mode, accumulate pairs per CRM for batch enqueue
-        pending_pairs = Hash.new { |h, k| h[k] = [] } if @async
+        if @async
+          call_async
+        else
+          call_sync
+        end
+      end
 
-        # Finder returns: { ModelClass => { crm_sym => relation(ids-only) } }
-        Finder.call(models: @models, crm_name: @crm_name).each do |model, per_crm|
+      private
+
+      def call_async
+        stats = {total: 0, per_model: {}, errors: 0}
+        pending_pairs = Hash.new { |h, k| h[k] = [] }
+
+        stale_results.each do |model, per_crm|
+          model_count = 0
+
+          per_crm.each do |crm, relation|
+            ids = collect_ids(model, relation)
+            ids.each { |id| pending_pairs[crm] << [model.name, id] }
+            model_count += ids.size
+          end
+
+          stats[:per_model][model.name] = model_count
+          stats[:total] += model_count
+        end
+
+        enqueue_batch_jobs(pending_pairs)
+        stats
+      end
+
+      def call_sync
+        stats = {total: 0, per_model: {}, errors: 0}
+
+        stale_results.each do |model, per_crm|
           model_count  = 0
           model_errors = 0
 
           per_crm.each do |crm, relation|
-            if @async
-              ids = collect_ids(model, relation)
-              ids.each { |id| pending_pairs[crm] << [model.name, id] }
-              model_count += ids.size
-            else
-              processed = process_model_sync(model, relation, crm_name: crm)
-              model_count  += processed[:count]
-              model_errors += processed[:errors]
-            end
+            processed = process_model_sync(model, relation, crm_name: crm)
+            model_count  += processed[:count]
+            model_errors += processed[:errors]
           end
 
           stats[:per_model][model.name] = model_count
@@ -62,47 +84,36 @@ module Etlify
           stats[:errors] += model_errors
         end
 
-        enqueue_batch_jobs(pending_pairs) if @async
-
         stats
       end
 
-      private
+      def stale_results
+        Finder.call(models: @models, crm_name: @crm_name)
+      end
 
-      # Collect all IDs for a model's stale relation without loading records.
+      # Collect all IDs for a model's stale relation.
       def collect_ids(model, relation)
-        ids = []
-        pk = model.primary_key.to_sym
-        base_scope = model.unscoped.where(pk => relation)
-
-        base_scope.in_batches(of: @batch_size) do |batch_rel|
-          ids.concat(batch_rel.pluck(pk))
-        end
-
-        ids
+        primary_key = model.primary_key.to_sym
+        model.unscoped.where(primary_key => relation).pluck(primary_key)
       end
 
       # Process one model's stale relation inline (sync mode).
       def process_model_sync(model, relation, crm_name:)
         count  = 0
         errors = 0
-        pk     = model.primary_key.to_sym
+        primary_key = model.primary_key.to_sym
 
-        scope = model.unscoped.where(pk => relation)
-        scope.in_batches(of: @batch_size) do |batch_rel|
-          ids = batch_rel.pluck(pk)
-          next if ids.empty?
-
-          model.where(pk => ids).find_each(batch_size: @batch_size) do |rec|
-            conf  = rec.class.etlify_crms.fetch(crm_name.to_sym)
+        model.unscoped
+             .where(primary_key => relation)
+             .find_each(batch_size: @batch_size) do |record|
+            conf  = record.class.etlify_crms.fetch(crm_name.to_sym)
             guard = conf[:guard]
-            next if guard && !guard.call(rec)
+            next if guard && !guard.call(record)
 
-            service = Etlify::Synchronizer.call(rec, crm_name: crm_name)
+            service = Etlify::Synchronizer.call(record, crm_name: crm_name)
             count += 1
             errors += 1 if service == :error
           end
-        end
 
         {count: count, errors: errors}
       end
