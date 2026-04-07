@@ -41,7 +41,7 @@ module Etlify
       # (e.g., "email" for contacts, "domain" for companies)
       # @return [String, nil] HubSpot hs_object_id as string or nil if not available
       def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
-        raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
+        raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
         raise ArgumentError, "payload must be a Hash" unless payload.is_a?(Hash)
 
         properties   = payload.dup
@@ -77,8 +77,8 @@ module Etlify
       # @param crm_id [String]
       # @return [Boolean] true on 2xx response, false on 404
       def delete!(object_type:, crm_id:)
-        raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
-        raise ArgumentError, "crm_id must be provided" if crm_id.nil? || crm_id.to_s.empty?
+        raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
+        raise ArgumentError, "crm_id must be provided" if crm_id.to_s.blank?
 
         path = "/crm/v3/objects/#{object_type}/#{crm_id}"
         resp = request(:delete, path)
@@ -95,8 +95,8 @@ module Etlify
       # @param id_property [String] Unique property for matching (e.g., "email")
       # @return [Hash{String => String}] mapping of id_property value to hs_object_id
       def batch_upsert!(object_type:, records:, id_property:)
-        raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
-        raise ArgumentError, "id_property must be provided" if id_property.nil? || id_property.to_s.empty?
+        raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
+        raise ArgumentError, "id_property must be provided" if id_property.to_s.blank?
         raise ArgumentError, "records must be a non-empty Array" if !records.is_a?(Array) || records.empty?
 
         path = "/crm/v3/objects/#{object_type}/batch/upsert"
@@ -125,8 +125,8 @@ module Etlify
       # @param crm_ids [Array<String>] hs_object_id values to archive
       # @return [Boolean] true when all batches succeed
       def batch_delete!(object_type:, crm_ids:)
-        raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
-        raise ArgumentError, "crm_ids must be a non-empty Array" unless crm_ids.is_a?(Array) && !crm_ids.empty?
+        raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
+        raise ArgumentError, "crm_ids must be a non-empty Array" if !crm_ids.is_a?(Array) || crm_ids.empty?
 
         path = "/crm/v3/objects/#{object_type}/batch/archive"
 
