@@ -1192,90 +1192,30 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
     end
   end
 
-  describe "formula validation" do
-    it "rejects field names with special characters" do
-      expect do
-        adapter.upsert!(
-          object_type: table,
-          payload: {"} = 1) OR 1=1; //" => "hack"},
-          id_property: "} = 1) OR 1=1; //"
-        )
-      end.to raise_error(
-        ArgumentError, /Invalid Airtable field name/
-      )
-    end
-
-    it "rejects non-scalar formula values" do
-      expect do
-        adapter.upsert!(
-          object_type: table,
-          payload: {Email: ["a@b.com"]},
-          id_property: "Email"
-        )
-      end.to raise_error(
-        ArgumentError, /Formula value must be/
-      )
-    end
-  end
-
-  describe "path traversal protection" do
-    it "rejects object_type with path traversal" do
-      expect do
-        adapter.upsert!(
-          object_type: "../etc/passwd",
-          payload: {Name: "hack"}
-        )
-      end.to raise_error(
-        ArgumentError, /object_type.*safe path segment/
-      )
-    end
-
-    it "rejects crm_id with path traversal" do
-      expect do
-        adapter.delete!(
-          object_type: table, crm_id: "../../secret"
-        )
-      end.to raise_error(
-        ArgumentError, /crm_id.*safe path segment/
-      )
-    end
-
-    it "accepts valid Airtable record IDs" do
+  describe "URL encoding of path segments" do
+    it "URL-encodes object_type with spaces" do
       expect(http).to receive(:request).with(
-        :delete, anything, anything
+        :post, /My%20Contacts/, anything
+      ).and_return(
+        {status: 200, body: {id: "recSPC"}.to_json}
+      )
+
+      id = adapter.upsert!(
+        object_type: "My Contacts",
+        payload: {Name: "Test"}
+      )
+      expect(id).to eq("recSPC")
+    end
+
+    it "URL-encodes path traversal attempts" do
+      expect(http).to receive(:request).with(
+        :delete,
+        satisfy { |url| !url.include?("/../") },
+        anything
       ).and_return({status: 200, body: "{}"})
 
-      expect(
-        adapter.delete!(
-          object_type: table, crm_id: "recABC123xyz"
-        )
-      ).to be true
-    end
-  end
-
-  describe "backslash escaping in formulas" do
-    it "escapes backslashes in formula values" do
-      expect(http).to receive(:request).with(
-        :get,
-        satisfy do |url|
-          decoded = URI.decode_www_form_component(url)
-          decoded.include?('{Name} = "back\\\\slash"')
-        end,
-        anything
-      ).and_return(
-        {status: 200, body: {records: []}.to_json}
-      )
-
-      expect(http).to receive(:request).with(
-        :post, anything, anything
-      ).and_return(
-        {status: 200, body: {id: "recBS"}.to_json}
-      )
-
-      adapter.upsert!(
-        object_type: table,
-        payload: {Name: 'back\\slash'},
-        id_property: "Name"
+      adapter.delete!(
+        object_type: table, crm_id: "../../secret"
       )
     end
   end

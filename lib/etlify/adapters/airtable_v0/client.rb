@@ -35,7 +35,11 @@ module Etlify
         end
 
         def base_path(object_type)
-          "/#{@base_id}/#{object_type}"
+          "/#{@base_id}/#{encode_path_segment(object_type)}"
+        end
+
+        def record_path(object_type, record_id)
+          "#{base_path(object_type)}/#{encode_path_segment(record_id)}"
         end
 
         def raise_for_error!(response, path:)
@@ -108,6 +112,11 @@ module Etlify
 
           response[:json] = parse_json_safe(response[:body])
           response
+        end
+
+        def encode_path_segment(segment)
+          URI.encode_www_form_component(segment.to_s)
+             .gsub("+", "%20")
         end
 
         def parse_json_safe(raw_body)

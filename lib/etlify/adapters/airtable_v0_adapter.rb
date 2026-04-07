@@ -17,7 +17,6 @@ module Etlify
     #   adapter.batch_delete!(object_type: "tblXXX", crm_ids: ["recAAA", "recBBB"])
     class AirtableV0Adapter
       BATCH_MAX_SIZE = 10
-      SAFE_PATH_SEGMENT = /\A[\w\-]+\z/
 
       def rate_limiter
         @client.rate_limiter
@@ -46,7 +45,7 @@ module Etlify
       # For bulk operations, prefer batch_upsert! which uses
       # Airtable's native performUpsert (up to 10 rec/req).
       def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
-        validate_path_segment!(:object_type, object_type)
+        validate_string!(:object_type, object_type)
         raise ArgumentError, "payload must be a Hash" unless payload.is_a?(Hash)
 
         properties = payload.dup
@@ -63,10 +62,10 @@ module Etlify
       end
 
       def delete!(object_type:, crm_id:)
-        validate_path_segment!(:object_type, object_type)
-        validate_path_segment!(:crm_id, crm_id)
+        validate_string!(:object_type, object_type)
+        validate_string!(:crm_id, crm_id)
 
-        path = "#{@client.base_path(object_type)}/#{crm_id}"
+        path = @client.record_path(object_type, crm_id)
         response = @client.delete(path)
 
         return true if response[:status].between?(200, 299)
@@ -82,9 +81,9 @@ module Etlify
       # partial success when processing large batches.
       # @return [Hash{String => String}] mapping of id_property value to Airtable record ID
       def batch_upsert!(object_type:, records:, id_property:)
-        validate_path_segment!(:object_type, object_type)
+        validate_string!(:object_type, object_type)
         validate_present!(:id_property, id_property)
-        unless records.is_a?(Array) && !records.empty?
+        if !records.is_a?(Array) || records.empty?
           raise ArgumentError,
                 "records must be a non-empty Array"
         end
@@ -109,9 +108,10 @@ module Etlify
       # Note: if a later slice fails, records from earlier
       # slices are already deleted. Callers should handle
       # partial success when processing large batches.
+      # @return [Array<Hash>] Airtable record hashes (with deleted: true)
       def batch_delete!(object_type:, crm_ids:)
-        validate_path_segment!(:object_type, object_type)
-        unless crm_ids.is_a?(Array) && !crm_ids.empty?
+        validate_string!(:object_type, object_type)
+        if !crm_ids.is_a?(Array) || crm_ids.empty?
           raise ArgumentError,
                 "crm_ids must be a non-empty Array"
         end
@@ -164,7 +164,7 @@ module Etlify
       end
 
       def update_record(object_type, record_id, payload)
-        path = "#{@client.base_path(object_type)}/#{record_id}"
+        path = @client.record_path(object_type, record_id)
         response = @client.patch(path, body: {fields: stringify_keys(payload)})
         @client.raise_for_error!(response, path: path)
         true
@@ -225,12 +225,6 @@ module Etlify
         return unless value.nil? || value.to_s.empty?
 
         raise ArgumentError, "#{name} must be provided"
-      end
-
-      def validate_path_segment!(name, value)
-        return if value.is_a?(String) && value.match?(SAFE_PATH_SEGMENT)
-
-        raise ArgumentError, "#{name} must be a safe path segment (got #{value.inspect})"
       end
     end
   end
