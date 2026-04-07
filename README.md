@@ -365,7 +365,7 @@ Etlify::CRM.register(
     access_token: ENV[“HUBSPOT_PRIVATE_APP_TOKEN”]
   ),
   options: {
-    rate_limit: { max_requests: 100, period: 10 },
+    rate_limit: { max_requests: 100, period: 10.seconds },
     max_sync_errors: 5,
   }
 )
@@ -536,7 +536,7 @@ Etlify.configure do |config|
       base_id: ENV["AIRTABLE_BASE_ID"]
     ),
     options: {
-      rate_limit: { max_requests: 5, period: 1 }, # seconds
+      rate_limit: { max_requests: 5, period: 1.second },
     }
   )
 end
