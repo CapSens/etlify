@@ -20,7 +20,7 @@ Etlify sits beside your app; it does **not** try to own your domain or backgroun
 | ----------- | ------------------------------------------------------------- | --------------------------------------------------- |
 | DSL         | `include Etlify::Model` + `etlified_with(...)` on your models | Opt-in sync with a single line; clear, local intent |
 | Serialisers | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
-| Adapters    | HubSpot adapter included; plug your own                       | Swap CRMs without touching model code               |
+| Adapters    | HubSpot & Brevo adapters included; plug your own              | Swap CRMs without touching model code               |
 | Idempotence | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
 | Jobs        | `crm_sync!` enqueues an ActiveJob; batch sync via `BatchSyncJob` | Fits your queue; built-in rate limiting              |
 | Delete      | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
@@ -521,6 +521,56 @@ adapter.batch_delete!(
 
 ---
 
+## Brevo adapter (API v3)
+
+Etlify ships with `Etlify::Adapters::BrevoAdapter` for Brevo (ex-Sendinblue). It supports contacts, companies, and deals.
+
+### Configuration
+
+```ruby
+Etlify.configure do |config|
+  Etlify::CRM.register(
+    :brevo,
+    adapter: Etlify::Adapters::BrevoAdapter.new(
+      api_key: ENV["BREVO_API_KEY"]
+    ),
+    options: {
+      rate_limit: { max_requests: 100, period: 3600 },
+    }
+  )
+end
+```
+
+### Behaviour
+
+- `object_type`: `"contacts"`, `"companies"`, or `"deals"`.
+- `id_property`: for contacts, use `"email"` (default lookup) or `"ext_id"` (external identifier). Companies and deals require `crm_id` for updates.
+- Contact upsert: searches by email (or ext_id), then creates or updates.
+
+### Example
+
+```ruby
+class User < ApplicationRecord
+  include Etlify::Model
+
+  brevo_etlified_with(
+    serializer: UserBrevoSerializer,
+    crm_object_type: "contacts",
+    id_property: :email,
+    sync_if: ->(user) { user.email.present? }
+  )
+end
+
+# Later
+user.brevo_sync!
+```
+
+> **Note:** Brevo's batch import endpoint is asynchronous and incompatible with Etlify's synchronous `batch_upsert!` interface. `BatchSyncJob` falls back to sequential `Synchronizer.call` for Brevo.
+
+> **Rate limiting:** Brevo enforces 100 requests/hour (standard plan). Configure `rate_limit` accordingly.
+
+---
+
 ## Writing your own adapter
 
 Implement the following interface:
@@ -628,6 +678,7 @@ expect(fake_adapter).to have_received(:upsert!).with(
 
 - `Etlify::Adapters::NullAdapter` (default; no-op)
 - `Etlify::Adapters::HubspotV3Adapter` (API v3, with batch support)
+- `Etlify::Adapters::BrevoAdapter` (API v3, contacts/companies/deals)
 
 ---
 
