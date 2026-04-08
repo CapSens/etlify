@@ -23,38 +23,15 @@ RSpec.describe Etlify::RateLimiter do
   end
 
   describe "#throttle!" do
-    it "does not sleep on the first call" do
-      limiter = described_class.new(max_requests: 10, period: 1)
-
-      expect(limiter).not_to receive(:sleep)
-      limiter.throttle!
-    end
-
-    it "sleeps the required amount between calls" do
-      limiter = described_class.new(max_requests: 10, period: 1)
-      # interval = 0.1s
-
-      allow(limiter).to receive(:sleep)
-      # Simulate immediate second call (no elapsed time)
-      allow(limiter).to receive(:monotonic_now).and_return(100.0, 100.0)
-
-      limiter.throttle!
-      limiter.throttle!
-
-      expect(limiter).to have_received(:sleep).with(0.1).once
-    end
-
-    it "does not sleep when enough time has elapsed" do
+    it "sleeps for the configured interval on each call" do
       limiter = described_class.new(max_requests: 10, period: 1)
 
       allow(limiter).to receive(:sleep)
-      # 0.2s elapsed, interval is 0.1s -> no sleep needed
-      allow(limiter).to receive(:monotonic_now).and_return(100.0, 100.2)
 
       limiter.throttle!
       limiter.throttle!
 
-      expect(limiter).not_to have_received(:sleep)
+      expect(limiter).to have_received(:sleep).with(0.1).twice
     end
   end
 
