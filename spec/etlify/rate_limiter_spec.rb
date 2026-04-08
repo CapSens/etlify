@@ -71,12 +71,4 @@ RSpec.describe Etlify::RateLimiter do
       expect(described_class.new.interval).to eq(0)
     end
   end
-
-  describe ".null" do
-    it "returns a NullLimiter" do
-      expect(Etlify::RateLimiter.null).to be_a(
-        Etlify::RateLimiter::NullLimiter
-      )
-    end
-  end
 end

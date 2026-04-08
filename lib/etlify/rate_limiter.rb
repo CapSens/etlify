@@ -5,8 +5,14 @@ module Etlify
     # @param max_requests [Numeric] must be > 0 (use NullLimiter for no-op)
     # @param period [Numeric] must be > 0 (use NullLimiter for no-op)
     def initialize(max_requests:, period:)
-      raise ArgumentError, "max_requests must be positive" unless max_requests.is_a?(Numeric) && max_requests > 0
-      raise ArgumentError, "period must be positive" unless period.is_a?(Numeric) && period > 0
+      unless max_requests.is_a?(Numeric) && max_requests > 0
+        raise ArgumentError,
+              "max_requests must be positive (use NullLimiter for no-op)"
+      end
+      unless period.is_a?(Numeric) && period > 0
+        raise ArgumentError,
+              "period must be positive (use NullLimiter for no-op)"
+      end
 
       @interval = period.to_f / max_requests
       @last_call_at = nil
@@ -21,12 +27,6 @@ module Etlify
       # Record when this call happened so the next call
       # can compute the remaining wait time accurately.
       @last_call_at = monotonic_now
-    end
-
-    # Convenience factory for a no-op limiter (used in tests
-    # or when no throttling is desired).
-    def self.null
-      NullLimiter.new
     end
 
     private
