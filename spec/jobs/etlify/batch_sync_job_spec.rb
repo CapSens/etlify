@@ -110,6 +110,101 @@ RSpec.describe Etlify::BatchSyncJob do
       expect(jobs.size).to eq(1)
       expect(jobs.first[:args][0]).to eq("hubspot")
     end
+
+    it "re-enqueues remaining pairs when batch fails mid-way" do
+      user1 = create_user!(index: 1)
+      user2 = create_user!(index: 2)
+      user3 = create_user!(index: 3)
+
+      batch_call_count = 0
+      allow(Etlify::BatchSynchronizer).to receive(:call) do |records, **kwargs|
+        batch_call_count += 1
+        raise Etlify::RateLimited.new("rate limited", status: 429)
+      end
+
+      pairs = ["User", user1.id, "User", user2.id, "User", user3.id]
+      described_class.perform_now("hubspot", pairs)
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(jobs.size).to eq(1)
+
+      re_enqueued_pairs = jobs.first[:args][1].each_slice(2).to_a
+      re_enqueued_ids = re_enqueued_pairs.map(&:last)
+      expect(re_enqueued_ids).to include(user1.id, user2.id, user3.id)
+    end
+
+    it "re-enqueues on RateLimited in sequential mode" do
+      minimal_adapter = Object.new
+      minimal_adapter.define_singleton_method(:upsert!) { |**_| "123" }
+      minimal_adapter.define_singleton_method(:delete!) { |**_| true }
+
+      Etlify::CRM.register(:seq_crm, adapter: minimal_adapter)
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          seq_crm: {
+            adapter: minimal_adapter,
+            id_property: "email",
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      user1 = create_user!(index: 1)
+      user2 = create_user!(index: 2)
+      pairs = ["User", user1.id, "User", user2.id]
+
+      allow(Etlify::Synchronizer).to receive(:call)
+        .and_raise(Etlify::RateLimited.new("rate limited", status: 429))
+
+      described_class.perform_now("seq_crm", pairs)
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(jobs.size).to eq(1)
+      expect(jobs.first[:args][0]).to eq("seq_crm")
+
+      re_enqueued_pairs = jobs.first[:args][1].each_slice(2).to_a
+      expect(re_enqueued_pairs.size).to eq(2)
+
+      Etlify::CRM.registry.delete(:seq_crm)
+    end
+  end
+
+  describe "sequential mode error handling" do
+    it "skips records that raise and continues with the rest" do
+      minimal_adapter = Object.new
+      minimal_adapter.define_singleton_method(:upsert!) { |**_| "123" }
+      minimal_adapter.define_singleton_method(:delete!) { |**_| true }
+
+      Etlify::CRM.register(:error_crm, adapter: minimal_adapter)
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          error_crm: {
+            adapter: minimal_adapter,
+            id_property: "email",
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      user1 = create_user!(index: 1)
+      user2 = create_user!(index: 2)
+      pairs = ["User", user1.id, "User", user2.id]
+
+      call_count = 0
+      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
+        call_count += 1
+        raise StandardError, "boom" if call_count == 1
+
+        :synced
+      end
+
+      described_class.perform_now("error_crm", pairs)
+
+      # Both records were attempted (no early abort)
+      expect(Etlify::Synchronizer).to have_received(:call).twice
+
+      Etlify::CRM.registry.delete(:error_crm)
+    end
   end
 
   describe "concurrency lock" do
@@ -152,6 +247,25 @@ RSpec.describe Etlify::BatchSyncJob do
 
       expect(cache.exist?(lock_key("hubspot"))).to be(false)
     end
+
+    it "clears the lock even when perform raises" do
+      user = create_user!(index: 1)
+      pairs = ["User", user.id]
+
+      allow(Etlify::BatchSynchronizer).to receive(:call)
+        .and_raise(RuntimeError, "unexpected failure")
+
+      described_class.perform_later("hubspot", pairs)
+      expect(cache.exist?(lock_key("hubspot"))).to be(true)
+
+      begin
+        aj_perform_enqueued_jobs
+      rescue RuntimeError
+        nil
+      end
+
+      expect(cache.exist?(lock_key("hubspot"))).to be(false)
+    end
   end
 
   describe "discovery mode (no record_pairs)" do
@@ -162,6 +276,28 @@ RSpec.describe Etlify::BatchSyncJob do
       described_class.perform_now("hubspot")
 
       expect(CrmSynchronisation.where(crm_name: "hubspot").count).to eq(2)
+    end
+
+    it "only discovers stale records, not already-synced ones" do
+      stale_user = create_user!(index: 1)
+      synced_user = create_user!(index: 2)
+
+      # Sync user2 so it becomes non-stale
+      Etlify::Synchronizer.call(synced_user, crm_name: :hubspot)
+
+      # Spy on BatchSynchronizer to capture which records are passed
+      synced_records = []
+      allow(Etlify::BatchSynchronizer).to receive(:call)
+        .and_wrap_original do |method, records, **kwargs|
+          synced_records.concat(records)
+          method.call(records, **kwargs)
+        end
+
+      described_class.perform_now("hubspot")
+
+      # Only the stale user should have been discovered and passed
+      # to the synchronizer
+      expect(synced_records.map(&:id)).to eq([stale_user.id])
     end
   end
 end

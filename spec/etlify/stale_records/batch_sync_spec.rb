@@ -351,6 +351,131 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
     end
   end
 
+  describe "guard clause in sync mode" do
+    it "skips records when guard returns false" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+            guard: ->(record) { record.email != "user2@example.com" },
+          },
+        }
+      )
+
+      create_user!(index: 1)
+      create_user!(index: 2)
+      create_user!(index: 3)
+
+      synchronizer_calls = []
+      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
+        synchronizer_calls << record.email
+        :synced
+      end
+
+      stats = described_class.call(async: false, batch_size: 10)
+
+      expect(stats[:total]).to eq(2)
+      expect(stats[:errors]).to eq(0)
+      expect(synchronizer_calls).to match_array(
+        ["user1@example.com", "user3@example.com"]
+      )
+    end
+
+    it "processes all records when guard returns true" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+            guard: ->(_record) { true },
+          },
+        }
+      )
+
+      create_user!(index: 1)
+      create_user!(index: 2)
+
+      allow(Etlify::Synchronizer).to receive(:call).and_return(:synced)
+
+      stats = described_class.call(async: false, batch_size: 10)
+
+      expect(stats[:total]).to eq(2)
+      expect(Etlify::Synchronizer).to have_received(:call).twice
+    end
+  end
+
+  describe "models: parameter" do
+    it "restricts sync to the specified models" do
+      crm_config = {
+        hubspot: {
+          adapter: Etlify::Adapters::NullAdapter.new,
+          id_property: "email",
+          crm_object_type: "contacts",
+        },
+      }
+
+      allow(User).to receive(:etlify_crms).and_return(crm_config)
+      allow(Company).to receive(:etlify_crms).and_return(crm_config)
+
+      create_user!(index: 1)
+
+      synchronizer_calls = []
+      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
+        synchronizer_calls << record.class.name
+        :synced
+      end
+
+      stats = described_class.call(
+        models: [User],
+        async: false,
+        batch_size: 10
+      )
+
+      expect(stats[:total]).to eq(1)
+      expect(stats[:per_model].keys).to eq(["User"])
+      expect(synchronizer_calls).to eq(["User"])
+    end
+  end
+
+  describe ".call in sync mode with multiple CRMs" do
+    it "syncs each record for every configured CRM" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+          },
+          salesforce: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      create_user!(index: 1)
+      create_user!(index: 2)
+
+      called_crms = []
+      allow(Etlify::Synchronizer).to receive(:call) do |_record, crm_name:|
+        called_crms << crm_name
+        :synced
+      end
+
+      stats = described_class.call(async: false, batch_size: 10)
+
+      expect(stats[:total]).to eq(4)
+      expect(stats[:errors]).to eq(0)
+      expect(stats[:per_model]["User"]).to eq(4)
+      expect(called_crms.count(:hubspot)).to eq(2)
+      expect(called_crms.count(:salesforce)).to eq(2)
+    end
+  end
+
   describe "multiple models in async mode" do
     it "aggregates per_model counts across models and CRMs" do
       crm_config = {
