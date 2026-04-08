@@ -53,9 +53,8 @@ module Etlify
           model_count = 0
 
           per_crm.each do |crm, relation|
-            ids = collect_ids(model, relation)
-            ids.each { |id| pending_pairs[crm] << [model.name, id] }
-            model_count += ids.size
+            relation.ids.each { |id| pending_pairs[crm] << [model.name, id] }
+            model_count += relation.ids.size
           end
 
           stats[:per_model][model.name] = model_count
@@ -91,12 +90,6 @@ module Etlify
         Finder.call(models: @models, crm_name: @crm_name)
       end
 
-      # Collect all IDs for a model's stale relation.
-      def collect_ids(model, relation)
-        primary_key = model.primary_key.to_sym
-        model.unscoped.where(primary_key => relation).pluck(primary_key)
-      end
-
       # Process one model's stale relation inline (sync mode).
       def process_model_sync(model, relation, crm_name:)
         count  = 0
@@ -106,14 +99,14 @@ module Etlify
         model.unscoped
              .where(primary_key => relation)
              .find_each(batch_size: @batch_size) do |record|
-            conf  = record.class.etlify_crms.fetch(crm_name.to_sym)
-            guard = conf[:guard]
-            next if guard && !guard.call(record)
+          conf  = record.class.etlify_crms.fetch(crm_name.to_sym)
+          guard = conf[:guard]
+          next if guard && !guard.call(record)
 
-            service = Etlify::Synchronizer.call(record, crm_name: crm_name)
-            count += 1
-            errors += 1 if service == :error
-          end
+          service = Etlify::Synchronizer.call(record, crm_name: crm_name)
+          count += 1
+          errors += 1 if service == :error
+        end
 
         {count: count, errors: errors}
       end

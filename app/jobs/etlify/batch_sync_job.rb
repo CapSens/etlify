@@ -62,11 +62,7 @@ module Etlify
           relation = per_crm[crm_name]
           next if relation.nil?
 
-          primary_key = model.primary_key.to_sym
-          model.unscoped
-               .where(primary_key => relation)
-               .pluck(primary_key)
-               .each { |id| pairs << [model.name, id] }
+          relation.ids.each { |id| pairs << [model.name, id] }
         end
 
       pairs
