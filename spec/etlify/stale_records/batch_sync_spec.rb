@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "rails_helper"
 
 # Custom job class for testing job_class option
@@ -30,7 +32,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
   end
 
   describe ".call in async mode" do
-    it "enqueues one job per stale id and per CRM when no filter is given" do
+    it "enqueues one BatchSyncJob per CRM with all record pairs" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
@@ -51,22 +53,28 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
 
       stats = described_class.call(async: true, batch_size: 10)
 
-      # 2 users × 2 CRMs = 4 syncs to perform
+      # 2 users x 2 CRMs = 4 syncs to perform
       expect(stats[:total]).to eq(4)
       expect(stats[:errors]).to eq(0)
       expect(stats[:per_model]["User"]).to eq(4)
 
       jobs = aj_enqueued_jobs
-      expect(jobs.size).to eq(4)
+             .select { |j| j[:job] == Etlify::BatchSyncJob }
+      expect(jobs.size).to eq(2)
 
-      pairs = jobs.map { |job| [job[:args][0], job[:args][1]] }.uniq
-      expect(pairs).to include(["User", user1.id], ["User", user2.id])
+      crm_names = jobs.map { |j| j[:args][0] }.sort
+      expect(crm_names).to eq(["hubspot", "salesforce"])
 
-      crm_names = jobs.map { |job| job[:args][2] }.uniq
-      expect(crm_names).to match_array(["hubspot", "salesforce"])
+      jobs.each do |job|
+        flat_pairs = job[:args][1]
+        pairs = flat_pairs.each_slice(2).to_a
+        ids = pairs.map(&:last)
+        expect(ids.sort).to eq([user1.id, user2.id].sort)
+        pairs.each { |p| expect(p.first).to eq("User") }
+      end
     end
 
-    it "enqueues two jobs for one record linked to two CRMs" do
+    it "enqueues two BatchSyncJobs for one record linked to two CRMs" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
@@ -86,22 +94,24 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
 
       stats = described_class.call(async: true, batch_size: 10)
 
-      # Same record, two CRMs => 2 syncs to perform
       expect(stats[:total]).to eq(2)
       expect(stats[:errors]).to eq(0)
       expect(stats[:per_model]["User"]).to eq(2)
 
       jobs = aj_enqueued_jobs
+             .select { |j| j[:job] == Etlify::BatchSyncJob }
       expect(jobs.size).to eq(2)
 
-      job_user_ids = jobs.map { |job| job[:args][1] }
-      expect(job_user_ids).to all(eq(user.id))
+      crm_names = jobs.map { |j| j[:args][0] }.sort
+      expect(crm_names).to eq(["hubspot", "salesforce"])
 
-      crm_names = jobs.map { |job| job[:args][2] }.uniq
-      expect(crm_names).to match_array(["hubspot", "salesforce"])
+      jobs.each do |job|
+        flat_pairs = job[:args][1]
+        expect(flat_pairs).to eq(["User", user.id])
+      end
     end
 
-    it "filters by crm_name when provided (only that CRM is enqueued)" do
+    it "filters by crm_name when provided" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
@@ -131,17 +141,16 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(stats[:per_model]["User"]).to eq(2)
 
       jobs = aj_enqueued_jobs
-      expect(jobs.size).to eq(2)
+             .select { |j| j[:job] == Etlify::BatchSyncJob }
+      expect(jobs.size).to eq(1)
+      expect(jobs.first[:args][0]).to eq("hubspot")
 
-      jobs.each do |job|
-        model_name, user_id, crm_name = job[:args]
-        expect(model_name).to eq("User")
-        expect([user1.id, user2.id]).to include(user_id)
-        expect(crm_name).to eq("hubspot")
-      end
+      flat_pairs = jobs.first[:args][1]
+      ids = flat_pairs.each_slice(2).map(&:last)
+      expect(ids.sort).to eq([user1.id, user2.id].sort)
     end
 
-    it "honors batch_size while enqueueing all ids per CRM" do
+    it "honors batch_size while collecting all ids per CRM" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
@@ -162,7 +171,12 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(stats[:errors]).to eq(0)
       expect(stats[:per_model]["User"]).to eq(3)
 
-      ids = aj_enqueued_jobs.map { |job| job[:args][1] }
+      jobs = aj_enqueued_jobs
+             .select { |j| j[:job] == Etlify::BatchSyncJob }
+      expect(jobs.size).to eq(1)
+
+      flat_pairs = jobs.first[:args][1]
+      ids = flat_pairs.each_slice(2).map(&:last)
       expect(ids.sort).to eq([user1.id, user2.id, user3.id].sort)
     end
 
@@ -215,7 +229,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       )
     end
 
-    it "counts service errors but continues processing other records" do
+    it "counts service errors but continues processing" do
       create_user!(index: 1)
       user2 = create_user!(index: 2)
       create_user!(index: 3)
@@ -230,7 +244,8 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         expect(stats[:total]).to eq(3)
         expect(stats[:errors]).to eq(1)
         expect(stats[:per_model]["User"]).to eq(3)
-        expect(Etlify::Synchronizer).to have_received(:call).exactly(3).times
+        expect(Etlify::Synchronizer).to have_received(:call)
+          .exactly(3).times
       end
     end
 
@@ -254,7 +269,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       create_user!(index: 2)
 
       called_crms = []
-      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
+      allow(Etlify::Synchronizer).to receive(:call) do |_record, crm_name:|
         called_crms << crm_name
         true
       end
@@ -296,7 +311,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         }
       )
 
-      user = create_user!(index: 1)
+      create_user!(index: 1)
 
       stats = described_class.call(async: true, batch_size: 10)
 
@@ -304,10 +319,9 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       jobs = aj_enqueued_jobs
       expect(jobs.size).to eq(1)
       expect(jobs.first[:job]).to eq(CustomSyncJob)
-      expect(jobs.first[:args]).to eq(["User", user.id, "custom_crm"])
     end
 
-    it "falls back to Etlify::SyncJob when no custom job_class is defined" do
+    it "falls back to BatchSyncJob when no custom job_class" do
       Etlify::CRM.register(
         :default_job_crm,
         adapter: Etlify::Adapters::NullAdapter.new,
@@ -331,9 +345,134 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(stats[:total]).to eq(1)
       jobs = aj_enqueued_jobs
       expect(jobs.size).to eq(1)
-      expect(jobs.first[:job]).to eq(Etlify::SyncJob)
+      expect(jobs.first[:job]).to eq(Etlify::BatchSyncJob)
 
       Etlify::CRM.registry.delete(:default_job_crm)
+    end
+  end
+
+  describe "guard clause in sync mode" do
+    it "skips records when guard returns false" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+            guard: ->(record) { record.email != "user2@example.com" },
+          },
+        }
+      )
+
+      create_user!(index: 1)
+      create_user!(index: 2)
+      create_user!(index: 3)
+
+      synchronizer_calls = []
+      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
+        synchronizer_calls << record.email
+        :synced
+      end
+
+      stats = described_class.call(async: false, batch_size: 10)
+
+      expect(stats[:total]).to eq(2)
+      expect(stats[:errors]).to eq(0)
+      expect(synchronizer_calls).to match_array(
+        ["user1@example.com", "user3@example.com"]
+      )
+    end
+
+    it "processes all records when guard returns true" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+            guard: ->(_record) { true },
+          },
+        }
+      )
+
+      create_user!(index: 1)
+      create_user!(index: 2)
+
+      allow(Etlify::Synchronizer).to receive(:call).and_return(:synced)
+
+      stats = described_class.call(async: false, batch_size: 10)
+
+      expect(stats[:total]).to eq(2)
+      expect(Etlify::Synchronizer).to have_received(:call).twice
+    end
+  end
+
+  describe "models: parameter" do
+    it "restricts sync to the specified models" do
+      crm_config = {
+        hubspot: {
+          adapter: Etlify::Adapters::NullAdapter.new,
+          id_property: "email",
+          crm_object_type: "contacts",
+        },
+      }
+
+      allow(User).to receive(:etlify_crms).and_return(crm_config)
+      allow(Company).to receive(:etlify_crms).and_return(crm_config)
+
+      create_user!(index: 1)
+
+      synchronizer_calls = []
+      allow(Etlify::Synchronizer).to receive(:call) do |record, crm_name:|
+        synchronizer_calls << record.class.name
+        :synced
+      end
+
+      stats = described_class.call(
+        models: [User],
+        async: false,
+        batch_size: 10
+      )
+
+      expect(stats[:total]).to eq(1)
+      expect(stats[:per_model].keys).to eq(["User"])
+      expect(synchronizer_calls).to eq(["User"])
+    end
+  end
+
+  describe ".call in sync mode with multiple CRMs" do
+    it "syncs each record for every configured CRM" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+          },
+          salesforce: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "email",
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      create_user!(index: 1)
+      create_user!(index: 2)
+
+      called_crms = []
+      allow(Etlify::Synchronizer).to receive(:call) do |_record, crm_name:|
+        called_crms << crm_name
+        :synced
+      end
+
+      stats = described_class.call(async: false, batch_size: 10)
+
+      expect(stats[:total]).to eq(4)
+      expect(stats[:errors]).to eq(0)
+      expect(stats[:per_model]["User"]).to eq(4)
+      expect(called_crms.count(:hubspot)).to eq(2)
+      expect(called_crms.count(:salesforce)).to eq(2)
     end
   end
 
@@ -359,20 +498,19 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
 
       stats = described_class.call(async: true, batch_size: 10)
 
-      # 2 models × 1 record × 2 CRMs = 4
+      # 2 models x 1 record x 2 CRMs = 4
       expect(stats[:total]).to eq(4)
       expect(stats[:errors]).to eq(0)
       expect(stats[:per_model]["User"]).to eq(2)
       expect(stats[:per_model]["Company"]).to eq(2)
 
       jobs = aj_enqueued_jobs
-      expect(jobs.size).to eq(4)
+             .select { |j| j[:job] == Etlify::BatchSyncJob }
+      # One BatchSyncJob per CRM (hubspot + salesforce)
+      expect(jobs.size).to eq(2)
 
-      jobs_by_model = jobs.map { |job| job[:args][0] }.tally
-      expect(jobs_by_model).to eq("User" => 2, "Company" => 2)
-
-      crm_names = jobs.map { |job| job[:args][2] }.uniq
-      expect(crm_names).to match_array(["hubspot", "salesforce"])
+      crm_names = jobs.map { |j| j[:args][0] }.sort
+      expect(crm_names).to eq(["hubspot", "salesforce"])
     end
   end
 end

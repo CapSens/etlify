@@ -22,7 +22,7 @@ Etlify sits beside your app; it does **not** try to own your domain or backgroun
 | Serialisers | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
 | Adapters    | HubSpot adapter included; plug your own                       | Swap CRMs without touching model code               |
 | Idempotence | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
-| Jobs        | `crm_sync!` enqueues an ActiveJob (`SyncJob`) or runs inline  | Fits your queue; simple to trigger                  |
+| Jobs        | `crm_sync!` enqueues an ActiveJob; batch sync via `BatchSyncJob` | Fits your queue; built-in rate limiting              |
 | Delete      | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
 
 ---
@@ -296,13 +296,13 @@ Beyond single-record sync, Etlify provides a **batch resynchronisation API** tha
 ### API
 
 ```ruby
-# Enqueue (default): one job per stale record
+# Enqueue (default): one BatchSyncJob per CRM
 Etlify::StaleRecords::BatchSync.call
 
 # Restrict to specific models
 Etlify::StaleRecords::BatchSync.call(models: [User, Company])
 
-# Restrict to specifics CRM
+# Restrict to a specific CRM
 Etlify::StaleRecords::BatchSync.call(crm_name: :hubspot)
 
 # Or both
@@ -324,25 +324,9 @@ The method returns a stats Hash:
 ```ruby
 {
   total:     Integer,              # number of records processed (or counted)
-  per_model: { "User" => 42, ...}, # per-model breakdown
+  per_model: { “User” => 42, ...}, # per-model breakdown
   errors:    Integer               # number of errors in async:false mode
 }
-```
-
-> By default, jobs are enqueued via `"Etlify::SyncJob"` and executed by your
-> ActiveJob backend. It can be overriden per CRM when registering it
-> It is very usefull to handle custom throttling rules
-
-```
-Etlify::CRM.register(
-  :hubspot,
-  adapter: Etlify::Adapters::HubspotV3Adapter.new(
-    access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
-  ),
-  options: {job_class: "Etlify::SyncObjectWorker"}
-)
-
-> the chosen class must implement .perform_later(record_class, id, crm_name)
 ```
 
 ### How it works
@@ -358,16 +342,71 @@ Etlify::CRM.register(
       supporting `belongs_to`, `has_one`, `has_many`, `has_* :through`,
       and polymorphic `belongs_to`).
 - `Etlify::StaleRecords::BatchSync` then iterates **by ID batches**:
-  - in **async: true** mode (default): **enqueue** one job per ID without loading
-    full records into memory;
+  - in **async: true** mode (default): collects all stale record IDs and
+    enqueues a **single `BatchSyncJob` per CRM** with all the pairs. The job
+    processes records sequentially, respecting the configured rate limit;
   - in **async: false** mode: load each record and pass it to
     `Etlify::Synchronizer.call(record)` **inline**
     (errors are logged and counted without interrupting the batch).
+
+> Individual `model.crm_sync!` calls still use `SyncJob` (one job per record)
+> for immediate, on-demand sync. `BatchSyncJob` is used only by `BatchSync`.
+
+### Rate limiting
+
+CRM APIs enforce rate limits (e.g. HubSpot: ~100 requests/10s). Etlify provides built-in rate limiting at the **adapter level** (per HTTP request), so multi-request operations like search + upsert are correctly throttled.
+
+#### Configuration
+
+```ruby
+Etlify::CRM.register(
+  :hubspot,
+  adapter: Etlify::Adapters::HubspotV3Adapter.new(
+    access_token: ENV[“HUBSPOT_PRIVATE_APP_TOKEN”]
+  ),
+  options: {
+    rate_limit: { max_requests: 100, period: 10 },
+    max_sync_errors: 5,
+  }
+)
+```
+
+- `max_requests`: maximum number of HTTP requests allowed in the period.
+- `period`: time window in seconds.
+
+When `rate_limit` is not configured, no throttling is applied (current behaviour preserved).
+
+#### How it works
+
+1. At `CRM.register` time, if `rate_limit` is configured and the adapter supports `rate_limiter=`, a `RateLimiter` is **permanently installed** on the adapter.
+2. Every HTTP request in the adapter calls `rate_limiter.throttle!`, which sleeps the minimum necessary time to stay within the rate limit.
+3. **All sync paths are throttled**: `BatchSyncJob`, individual `SyncJob`, inline `crm_sync!(async: false)`, and pending sync flushes — they all go through the same adapter.
+4. If the CRM returns a **429 (Rate Limited)** response despite throttling, `BatchSyncJob` re-enqueues itself with the **remaining records** after a backoff delay (default: 10 seconds).
+5. A cache-based lock ensures only **one `BatchSyncJob` runs per CRM** at a time.
+
+#### Custom adapter support
+
+To support rate limiting in a custom adapter, add a `rate_limiter=` accessor and call `@rate_limiter&.throttle!` before each HTTP request:
+
+```ruby
+class MyCrmAdapter
+  attr_accessor :rate_limiter
+
+  private
+
+  def request(method, path, body: nil)
+    @rate_limiter&.throttle!
+    # ... perform HTTP request
+  end
+end
+```
 
 ## Best practices
 
 - **Production**: prefer `async: true` with a **dedicated, low-priority queue**
   via ActiveJob.
+- **Rate limits**: configure `rate_limit` per CRM to avoid 429 errors and
+  let `BatchSyncJob` handle throttling automatically.
 - **Stable payloads**: ensure your serializers produce deterministic Hashes to
   benefit from **idempotence**.
 - **Dependencies**: declare `dependencies:` accurately in `etlified_with` so
@@ -451,6 +490,34 @@ class Subscription < ApplicationRecord
   )
 end
 ```
+
+### Batch operations
+
+The HubSpot adapter provides two additional methods for bulk operations, using HubSpot's native batch endpoints (up to 100 inputs per request, auto-sliced):
+
+```ruby
+adapter = Etlify::CRM.registry[:hubspot].adapter
+
+# Batch upsert via HubSpot's native /batch/upsert
+# Returns an Array of hs_object_id strings
+adapter.batch_upsert!(
+  object_type: "contacts",
+  records: [
+    {email: "a@example.com", firstname: "Alice"},
+    {email: "b@example.com", firstname: "Bob"},
+  ],
+  id_property: "email"
+)
+
+# Batch delete (archive) via /batch/archive
+# Returns true
+adapter.batch_delete!(
+  object_type: "contacts",
+  crm_ids: ["101", "102", "103"]
+)
+```
+
+> **Rate limiting:** HubSpot enforces rate limits per private app. Batch operations process up to 100 records per request (vs 1 for single-record calls), significantly reducing the number of API calls.
 
 ---
 
@@ -560,7 +627,7 @@ expect(fake_adapter).to have_received(:upsert!).with(
 ## Adapters included
 
 - `Etlify::Adapters::NullAdapter` (default; no-op)
-- `Etlify::Adapters::HubspotV3Adapter` (API v3)
+- `Etlify::Adapters::HubspotV3Adapter` (API v3, with batch support)
 
 ---
 

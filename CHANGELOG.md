@@ -1,5 +1,13 @@
 # UNRELEASED
 
+- Feat: Extract `DefaultHttp` into a shared class (`lib/etlify/adapters/default_http.rb`) for reuse across adapters.
+- Feat: Add `batch_upsert!` and `batch_delete!` to `HubspotV3Adapter`. Leverages HubSpot's native batch endpoints (`POST /batch/upsert` and `POST /batch/archive`, up to 100 inputs per request). `batch_upsert!` returns a `Hash{id_property_value => crm_id}` for reliable mapping.
+- Feat: Add `BatchSyncJob` — a single job per CRM that processes all stale records instead of enqueuing one `SyncJob` per record. Includes built-in rate limiting via a new `rate_limit` option on `Etlify::CRM.register`. The rate limiter is injected at the adapter level (per HTTP request). On `RateLimited` (429), the job re-enqueues with remaining records after backoff. `StaleRecords::BatchSync` now enqueues one `BatchSyncJob` per CRM in async mode.
+- Feat: Add `Etlify::RateLimiter` — sleep-based rate limiter with configurable `max_requests` / `period`.
+- Feat: Add `Etlify::BatchSynchronizer` — batch-aware synchronizer that applies per-record pre-checks (guard, digest, dependencies) then calls `adapter.batch_upsert!` for all ready records. Used by `BatchSyncJob` when the adapter supports it, with fallback to sequential `Synchronizer.call`.
+- Feat: Adapters now support an optional `rate_limiter=` accessor for per-HTTP-request throttling.
+- Feat: Add `batch_upsert!` and `batch_delete!` to `NullAdapter` for test support.
+
 # V0.9.4
 
 - Feat: Add `stale_scope` option to CRM DSL to restrict which records the `StaleRecords::Finder` considers. Accepts a lambda returning an ActiveRecord scope, applied at SQL level before any record is processed. This prevents unnecessary `CrmSynchronisation` rows for records that `sync_if` would skip. Models that do not specify `stale_scope` are not affected — the Finder behaves exactly as before.

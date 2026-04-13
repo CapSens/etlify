@@ -1,6 +1,7 @@
 require "json"
 require "uri"
 require "net/http"
+require_relative "default_http"
 
 module Etlify
   module Adapters
@@ -18,12 +19,15 @@ module Etlify
     #   adapter.delete!(object_type: "contacts", crm_id: "123") # => true, or false if 404
     class HubspotV3Adapter
       API_BASE = "https://api.hubapi.com"
+      BATCH_MAX_SIZE = 100
+
+      attr_accessor :rate_limiter
 
       # @param access_token [String] HubSpot private app token
       # @param http_client [#request] Optional HTTP client for tests. Signature: request(method, url, headers:, body:)
       def initialize(access_token:, http_client: nil)
         @access_token = access_token
-        @http         = http_client || DefaultHttp.new
+        @http         = http_client || Etlify::Adapters::DefaultHttp.new
       end
 
       # Upsert by searching on id_property (if provided), otherwise create directly.
@@ -37,7 +41,7 @@ module Etlify
       # (e.g., "email" for contacts, "domain" for companies)
       # @return [String, nil] HubSpot hs_object_id as string or nil if not available
       def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
-        raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
+        raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
         raise ArgumentError, "payload must be a Hash" unless payload.is_a?(Hash)
 
         properties   = payload.dup
@@ -73,8 +77,8 @@ module Etlify
       # @param crm_id [String]
       # @return [Boolean] true on 2xx response, false on 404
       def delete!(object_type:, crm_id:)
-        raise ArgumentError, "object_type must be a String" unless object_type.is_a?(String) && !object_type.empty?
-        raise ArgumentError, "crm_id must be provided" if crm_id.nil? || crm_id.to_s.empty?
+        raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
+        raise ArgumentError, "crm_id must be provided" if crm_id.to_s.blank?
 
         path = "/crm/v3/objects/#{object_type}/#{crm_id}"
         resp = request(:delete, path)
@@ -85,34 +89,64 @@ module Etlify
         raise_for_error!(resp, path: path)
       end
 
-      private
+      # Batch upsert via HubSpot's native /batch/upsert endpoint.
+      # @param object_type [String] CRM object type
+      # @param records [Array<Hash>] Properties hashes (must include the id_property key)
+      # @param id_property [String] Unique property for matching (e.g., "email")
+      # @return [Hash{String => String}] mapping of id_property value to hs_object_id
+      def batch_upsert!(object_type:, records:, id_property:)
+        raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
+        raise ArgumentError, "id_property must be provided" if id_property.to_s.blank?
+        raise ArgumentError, "records must be a non-empty Array" if !records.is_a?(Array) || records.empty?
 
-      # Simple Net::HTTP client used by default (dependency-free)
-      class DefaultHttp
-        def request(method, url, headers: {}, body: nil)
-          uri  = URI(url)
-          http = Net::HTTP.new(uri.host, uri.port)
-          http.use_ssl = uri.scheme == "https"
+        path = "/crm/v3/objects/#{object_type}/batch/upsert"
+        prop_key = id_property.to_s
 
-          klass = {
-            get: Net::HTTP::Get,
-            post: Net::HTTP::Post,
-            patch: Net::HTTP::Patch,
-            delete: Net::HTTP::Delete,
-          }.fetch(method) { raise ArgumentError, "Unsupported method: #{method.inspect}" }
+        records.each_slice(BATCH_MAX_SIZE).each_with_object({}) do |slice, mapping|
+          body = {
+            inputs: slice.map do |record|
+              props = stringify_keys(record)
+              {
+                id: props[prop_key].to_s,
+                idProperty: prop_key,
+                properties: props,
+              }
+            end,
+          }
 
-          req = klass.new(uri.request_uri, headers)
-          req.body = body if body
-
-          res = http.request(req)
-          {status: res.code.to_i, body: res.body}
-        rescue => error
-          # Bubble up transport-level errors to be wrapped by #request
-          raise error
+          resp = request(:post, path, body: body)
+          raise_for_error!(resp, path: path)
+          mapping.merge!(extract_batch_mapping(resp, prop_key))
         end
       end
 
+      # Batch delete (archive) via HubSpot's native /batch/archive endpoint.
+      # @param object_type [String] CRM object type
+      # @param crm_ids [Array<String>] hs_object_id values to archive
+      # @return [Boolean] true when all batches succeed
+      def batch_delete!(object_type:, crm_ids:)
+        raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
+        raise ArgumentError, "crm_ids must be a non-empty Array" if !crm_ids.is_a?(Array) || crm_ids.empty?
+
+        path = "/crm/v3/objects/#{object_type}/batch/archive"
+
+        crm_ids.each_slice(BATCH_MAX_SIZE) do |slice|
+          body = {
+            inputs: slice.map { |id| {id: id.to_s} },
+          }
+
+          resp = request(:post, path, body: body)
+          raise_for_error!(resp, path: path)
+        end
+
+        true
+      end
+
+      private
+
       def request(method, path, body: nil, query: {})
+        @rate_limiter&.throttle!
+
         url = API_BASE + path
         url += "?#{URI.encode_www_form(query)}" unless query.empty?
 
@@ -269,6 +303,18 @@ module Etlify
         end
 
         raise_for_error!(resp, path: path)
+      end
+
+      def extract_batch_mapping(resp, id_property)
+        results = resp[:json].is_a?(Hash) ? resp[:json]["results"] : nil
+        return {} unless results.is_a?(Array)
+
+        results.each_with_object({}) do |r, h|
+          crm_id = r["id"].to_s
+          props = r["properties"] || {}
+          id_value = props[id_property].to_s
+          h[id_value] = crm_id unless id_value.empty?
+        end
       end
 
       def stringify_keys(hash)
