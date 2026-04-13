@@ -1,5 +1,7 @@
 # UNRELEASED
 
+# V0.10.0
+
 - Feat: Extract `DefaultHttp` into a shared class (`lib/etlify/adapters/default_http.rb`) for reuse across adapters.
 - Feat: Add `batch_upsert!` and `batch_delete!` to `HubspotV3Adapter`. Leverages HubSpot's native batch endpoints (`POST /batch/upsert` and `POST /batch/archive`, up to 100 inputs per request). `batch_upsert!` returns a `Hash{id_property_value => crm_id}` for reliable mapping.
 - Feat: Add `BatchSyncJob` — a single job per CRM that processes all stale records instead of enqueuing one `SyncJob` per record. Includes built-in rate limiting via a new `rate_limit` option on `Etlify::CRM.register`. The rate limiter is injected at the adapter level (per HTTP request). On `RateLimited` (429), the job re-enqueues with remaining records after backoff. `StaleRecords::BatchSync` now enqueues one `BatchSyncJob` per CRM in async mode.
