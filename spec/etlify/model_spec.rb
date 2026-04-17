@@ -99,8 +99,8 @@ RSpec.describe Etlify::Model do
         serializer: dummy_serializer,
         crm_object_type: :contact,
         id_property: :external_id,
-        dependencies: %w[company owner],
-        sync_dependencies: %w[company],
+        dependencies: ["company", "owner"],
+        sync_dependencies: ["company"],
         sync_if: ->(r) { r.respond_to?(:active?) ? r.active? : true },
         job_class: "OverrideJob"
       )
@@ -110,8 +110,8 @@ RSpec.describe Etlify::Model do
       expect(conf[:guard]).to be_a(Proc)
       expect(conf[:crm_object_type]).to eq(:contact)
       expect(conf[:id_property]).to eq(:external_id)
-      expect(conf[:dependencies]).to eq(%i[company owner])
-      expect(conf[:sync_dependencies]).to eq(%i[company])
+      expect(conf[:dependencies]).to eq([:company, :owner])
+      expect(conf[:sync_dependencies]).to eq([:company])
       expect(conf[:adapter]).to eq(dummy_adapter)
       expect(conf[:job_class]).to eq("OverrideJob")
     end
@@ -482,6 +482,32 @@ RSpec.describe Etlify::Model do
         .with(inst, crm_name: :hubspot)
       inst.crm_sync!(crm_name: :hubspot, async: false)
     end
+
+    context "when the CRM is disabled" do
+      before do
+        allow(Etlify::CRM).to receive(:enabled?).with(:hubspot)
+                                                .and_return(false)
+      end
+
+      it "returns true without enqueuing anything (async)" do
+        job = Class.new do
+          def self.perform_later(*)
+          end
+        end
+        inst = klass.new
+        allow(inst).to receive(:resolve_job_class_for).and_return(job)
+
+        expect(job).not_to receive(:perform_later)
+        expect(inst.crm_sync!(crm_name: :hubspot, async: true)).to be(true)
+      end
+
+      it "returns true without calling Synchronizer (sync)" do
+        inst = klass.new
+
+        expect(Etlify::Synchronizer).not_to receive(:call)
+        expect(inst.crm_sync!(crm_name: :hubspot, async: false)).to be(true)
+      end
+    end
   end
 
   describe "#crm_delete!" do
@@ -498,6 +524,21 @@ RSpec.describe Etlify::Model do
       inst = klass.new
       expect(Etlify::Deleter).to receive(:call).with(inst, crm_name: :hubspot)
       inst.crm_delete!(crm_name: :hubspot)
+    end
+
+    context "when the CRM is disabled" do
+      before do
+        allow(Etlify::CRM).to receive(:enabled?).with(:hubspot)
+                                                .and_return(false)
+      end
+
+      it "returns true without calling Etlify::Deleter" do
+        klass = build_including_class
+        inst = klass.new
+
+        expect(Etlify::Deleter).not_to receive(:call)
+        expect(inst.crm_delete!(crm_name: :hubspot)).to be(true)
+      end
     end
   end
 
@@ -622,7 +663,7 @@ RSpec.describe Etlify::Model do
       ActiveRecord::Base.connection.drop_table(:etlify_things)
     end
 
-    class EtlifyThing < ApplicationRecord
+    class EtlifyThing < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
       self.table_name = "etlify_things"
       include Etlify::Model
     end

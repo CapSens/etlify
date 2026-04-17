@@ -462,4 +462,34 @@ RSpec.describe Etlify::Synchronizer do
       expect(line.last_error).to be_nil
     end
   end
+
+  context "when the CRM is disabled" do
+    let(:adapter_instance) { Etlify::Adapters::NullAdapter.new }
+
+    around do |example|
+      previous = Etlify::CRM.registry[:hubspot]
+      Etlify::CRM.register(
+        :hubspot,
+        adapter: adapter_instance,
+        enabled: false
+      )
+      example.run
+    ensure
+      if previous
+        Etlify::CRM.registry[:hubspot] = previous
+      else
+        Etlify::CRM.registry.delete(:hubspot)
+      end
+    end
+
+    it "returns :disabled without touching the adapter or the DB",
+       :aggregate_failures do
+      expect(adapter_instance).not_to receive(:upsert!)
+
+      result = described_class.call(user, crm_name: :hubspot)
+
+      expect(result).to eq(:disabled)
+      expect(sync_lines_for(user).count).to eq(0)
+    end
+  end
 end

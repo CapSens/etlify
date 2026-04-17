@@ -34,6 +34,8 @@ module Etlify
     end
 
     def call
+      return :disabled unless Etlify::CRM.enabled?(crm_name)
+
       # Honor sync guard first. If guard returns false, skip the sync.
       guard = conf[:guard]
       unless guard.nil? || guard.call(resource)

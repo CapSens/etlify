@@ -85,10 +85,57 @@ end.new
     expect(zoho.adapter).to eq(a2)
     expect(hubspot.options[:job]).to eq("A")
     expect(zoho.options[:job]).to eq("B")
-    expect(described_class.names).to match_array(%i[hubspot zoho])
+    expect(described_class.names).to match_array([:hubspot, :zoho])
   end
 
   it "fetch raises when CRM is not registered" do
     expect { described_class.fetch(:unknown) }.to raise_error(KeyError)
+  end
+
+  describe "enabled flag" do
+    it "defaults to true when not provided" do
+      described_class.register(:hubspot, adapter: adapter_instance)
+
+      expect(described_class.fetch(:hubspot).enabled).to be(true)
+      expect(described_class.enabled?(:hubspot)).to be(true)
+    end
+
+    it "stores enabled: false and exposes it via enabled?" do
+      described_class.register(
+        :hubspot,
+        adapter: adapter_instance,
+        enabled: false
+      )
+
+      expect(described_class.fetch(:hubspot).enabled).to be(false)
+      expect(described_class.enabled?(:hubspot)).to be(false)
+    end
+
+    it "accepts enabled: true explicitly" do
+      described_class.register(
+        :hubspot,
+        adapter: adapter_instance,
+        enabled: true
+      )
+
+      expect(described_class.enabled?(:hubspot)).to be(true)
+    end
+
+    it "raises when enabled is not a boolean" do
+      expect do
+        described_class.register(
+          :hubspot,
+          adapter: adapter_instance,
+          enabled: "yes"
+        )
+      end.to raise_error(
+        ArgumentError,
+        "enabled must be a boolean (true or false)"
+      )
+    end
+
+    it "returns true for unknown CRMs (safe default)" do
+      expect(described_class.enabled?(:unknown)).to be(true)
+    end
   end
 end

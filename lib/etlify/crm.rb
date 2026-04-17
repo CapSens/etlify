@@ -4,6 +4,7 @@ module Etlify
       :name,
       :adapter,
       :options,
+      :enabled,
       keyword_init: true
     )
 
@@ -15,7 +16,7 @@ module Etlify
 
       # Public API: register a new CRM
       # Etlify::CRM.register(:my_crm, adapter: MyAdapter.new, options: { job_class: X })
-      def register(name, adapter:, options: {})
+      def register(name, adapter:, enabled: true, options: {})
         key = name.to_sym
 
         if adapter.is_a?(Class)
@@ -25,6 +26,7 @@ module Etlify
           )
         end
 
+        validate_enabled!(enabled)
         validate_rate_limit!(options[:rate_limit]) if options[:rate_limit]
 
         copied_options =
@@ -40,7 +42,8 @@ module Etlify
         registry[key] = RegistryItem.new(
           name: key,
           adapter: adapter,
-          options: copied_options
+          options: copied_options,
+          enabled: enabled
         )
 
         # Install DSL on all classes that already included Etlify::Model
@@ -57,6 +60,13 @@ module Etlify
         registry.keys
       end
 
+      # Public: whether a CRM is enabled. Unknown CRMs default to true
+      # so that this helper is safe to call from any short-circuit site.
+      def enabled?(name)
+        item = registry[name.to_sym]
+        item ? item.enabled : true
+      end
+
       private
 
       def install_rate_limiter!(adapter, rate_limit)
@@ -67,6 +77,12 @@ module Etlify
           max_requests: rate_limit[:max_requests],
           period: rate_limit[:period]
         )
+      end
+
+      def validate_enabled!(enabled)
+        return if enabled.is_a?(TrueClass) || enabled.is_a?(FalseClass)
+
+        raise ArgumentError, "enabled must be a boolean (true or false)"
       end
 
       def validate_rate_limit!(rate_limit)

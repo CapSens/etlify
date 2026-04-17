@@ -21,6 +21,8 @@ module Etlify
     end
 
     def call
+      return :disabled unless Etlify::CRM.enabled?(crm_name)
+
       line = sync_line
       return :noop unless line&.crm_id.present?
 

@@ -71,8 +71,37 @@ RSpec.describe Etlify::Deleter do
     end
   end
 
+  context "when the CRM is disabled" do
+    around do |example|
+      previous = Etlify::CRM.registry[:hubspot]
+      Etlify::CRM.register(
+        :hubspot,
+        adapter: Etlify::Adapters::NullAdapter.new,
+        enabled: false
+      )
+      example.run
+    ensure
+      if previous
+        Etlify::CRM.registry[:hubspot] = previous
+      else
+        Etlify::CRM.registry.delete(:hubspot)
+      end
+    end
+
+    it "returns :disabled and does not call adapter.delete!" do
+      create_line(user, crm_name: "hubspot", crm_id: "crm-123")
+
+      adapter = instance_double(Etlify::Adapters::NullAdapter)
+      allow(Etlify::Adapters::NullAdapter).to receive(:new).and_return(adapter)
+      expect(adapter).not_to receive(:delete!)
+
+      res = described_class.call(user, crm_name: :hubspot)
+      expect(res).to eq(:disabled)
+    end
+  end
+
   context "when adapter.delete! raises" do
-    class FailingDeleteAdapter
+    class FailingDeleteAdapter # rubocop:disable Lint/ConstantDefinitionInBlock
       def delete!(crm_id:, object_type:)
         raise "remote failure"
       end
