@@ -4,6 +4,10 @@ Etlify.configure do |config|
   # Register CRM likewise:
     Etlify::CRM.register(
       :hubspot, adapter: Etlify::Adapters::HubspotV3Adapter,
+      # Enable/disable this CRM. When false, all sync/delete calls are
+      # no-op and return true (adapter is never invoked, no DB writes).
+      # Useful to keep Etlify dormant in dev/test. Default: true.
+      # enabled: Rails.env.production? || Rails.env.staging?,
       options: { job_class: Etlify::SyncJob }
     )
     # will provide DSL below for models
@@ -11,6 +15,7 @@ Etlify.configure do |config|
 
     # Etlify::CRM.register(
     #   :another_crm, adapter: Etlify::Adapters::AnotherAdapter,
+    #   # enabled: true,
     #   options: { job_class: Etlify::SyncJob }
     # )
     # will provide DSL below for models

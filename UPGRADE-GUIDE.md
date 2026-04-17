@@ -1,3 +1,96 @@
+# UPGRADING FROM 0.10.0 -> 0.11.0
+
+## 1. Overview
+
+Etlify 0.11.0 adds an `enabled:` flag on `Etlify::CRM.register` that lets you
+turn a CRM integration into a pure no-op at the process level — typically to
+keep Etlify dormant in development or test environments while leaving other
+CRMs active.
+
+**New features:**
+
+- **`enabled:` option** on `Etlify::CRM.register` (default `true`).
+- **`Etlify::CRM.enabled?(name)`** public helper (returns `true` for unknown
+  CRMs as a safe default).
+- **Model API stays truthy when disabled** — `record.hubspot_sync!` and
+  `record.hubspot_delete!` return `true` so calling code that branches on the
+  return value keeps working unchanged.
+
+---
+
+## 2. Database migrations
+
+No database migration required for this upgrade.
+
+---
+
+## 3. Configuration changes (optional)
+
+Disable a CRM entirely, typically outside of production:
+
+```ruby
+Etlify::CRM.register(
+  :hubspot,
+  adapter: Etlify::Adapters::HubspotV3Adapter.new(
+    access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
+  ),
+  enabled: Rails.env.production? || Rails.env.staging?,
+  options: { job_class: Etlify::SyncJob }
+)
+
+Etlify::CRM.register(
+  :another_crm,
+  adapter: AnotherAdapter.new,
+  # enabled: true  # default
+)
+```
+
+`enabled:` must be a boolean — anything else raises `ArgumentError` at
+registration time. Omitting the option keeps the previous behaviour
+(`enabled: true`), so existing setups work unchanged.
+
+---
+
+## 4. Behaviour when a CRM is disabled
+
+| Entry point | Return value | Side effects |
+| --- | --- | --- |
+| `record.<crm>_sync!` / `record.crm_sync!` | `true` | No job enqueued, no adapter call |
+| `record.<crm>_delete!` / `record.crm_delete!` | `true` | No adapter call |
+| `Etlify::Synchronizer.call` | `:disabled` | No adapter call, no write to `crm_synchronisations` |
+| `Etlify::Deleter.call` | `:disabled` | No adapter call |
+| `Etlify::BatchSynchronizer.call` | stats hash with `disabled: true`, `skipped: records.size` | No adapter call |
+| `Etlify::StaleRecords::BatchSync.call` | disabled CRMs silently skipped, enabled CRMs processed normally | Stats only reflect enabled CRMs |
+
+Existing `crm_synchronisations` rows are left untouched when a CRM is
+disabled — flipping `enabled:` back to `true` resumes normal sync without any
+extra action (records that became stale in the meantime will be picked up by
+the next `BatchSync`).
+
+---
+
+## 5. QA & testing checklist
+
+- [ ] In a non-production environment, set `enabled: false` on your CRM
+      registration and confirm:
+  - `record.hubspot_sync!` returns `true` and does not enqueue a job.
+  - `record.hubspot_delete!` returns `true`.
+  - `CrmSynchronisation.where(crm_name: "hubspot")` is not written.
+  - No outgoing HTTP request to the CRM (mock adapter or network logs).
+- [ ] In a spec, toggle `enabled` for a single CRM and assert other CRMs
+      keep syncing through `Etlify::StaleRecords::BatchSync`.
+- [ ] Re-enable the CRM and confirm that stale records are synced on the
+      next run.
+
+---
+
+## 6. Backward compatibility
+
+Fully backward-compatible. The default `enabled: true` preserves the
+pre-0.11.0 behaviour for every existing CRM registration.
+
+---
+
 # UPGRADING FROM 0.9.4 -> 0.10.0
 
 ## 1. Overview

@@ -119,5 +119,30 @@ RSpec.describe Etlify::BatchSynchronizer do
       expect(stats[:skipped]).to eq(1)
       expect(stats[:synced]).to eq(0)
     end
+
+    context "when the CRM is disabled" do
+      before do
+        allow(Etlify::CRM).to receive(:enabled?).with(:hubspot)
+                                                .and_return(false)
+      end
+
+      it "returns disabled stats and does not call batch_upsert!",
+         :aggregate_failures do
+        user1 = create_user!(index: 1)
+        user2 = create_user!(index: 2)
+
+        expect(adapter).not_to receive(:batch_upsert!)
+
+        stats = described_class.call([user1, user2], crm_name: :hubspot)
+
+        expect(stats[:disabled]).to be(true)
+        expect(stats[:skipped]).to eq(2)
+        expect(stats[:synced]).to eq(0)
+        expect(stats[:errors]).to eq(0)
+        expect(
+          CrmSynchronisation.where(crm_name: "hubspot").count
+        ).to eq(0)
+      end
+    end
   end
 end

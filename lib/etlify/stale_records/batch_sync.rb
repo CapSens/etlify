@@ -53,6 +53,8 @@ module Etlify
           model_count = 0
 
           per_crm.each do |crm, relation|
+            next unless Etlify::CRM.enabled?(crm)
+
             relation.ids.each { |id| pending_pairs[crm] << [model.name, id] }
             model_count += relation.ids.size
           end
@@ -73,6 +75,8 @@ module Etlify
           model_errors = 0
 
           per_crm.each do |crm, relation|
+            next unless Etlify::CRM.enabled?(crm)
+
             processed = process_model_sync(model, relation, crm_name: crm)
             model_count  += processed[:count]
             model_errors += processed[:errors]

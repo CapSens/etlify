@@ -21,6 +21,17 @@ module Etlify
     end
 
     def call
+      unless Etlify::CRM.enabled?(@crm_name)
+        return {
+          synced: 0,
+          skipped: @records.size,
+          buffered: 0,
+          not_modified: 0,
+          errors: 0,
+          disabled: true,
+        }
+      end
+
       stats = {synced: 0, skipped: 0, buffered: 0, not_modified: 0, errors: 0}
       ready = []
 

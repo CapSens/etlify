@@ -103,6 +103,40 @@ Etlify.configure do |config|
 end
 ```
 
+### Disabling a CRM
+
+Each CRM registration accepts an `enabled:` flag (default `true`). When set to
+`false`, Etlify behaves as if everything had worked for that CRM but does
+nothing: no adapter call, no job enqueued, no write to `crm_synchronisations`.
+This is handy in development or test environments where you do not want to
+touch the real CRM.
+
+```ruby
+Etlify::CRM.register(
+  :hubspot,
+  adapter: Etlify::Adapters::HubspotV3Adapter.new(
+    access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"]
+  ),
+  enabled: Rails.env.production? || Rails.env.staging?,
+  options: { job_class: Etlify::SyncJob }
+)
+
+Etlify::CRM.register(
+  :another_crm,
+  adapter: AnotherAdapter.new,
+  # enabled: true  # default
+)
+```
+
+Behavior when a CRM is disabled:
+
+- `record.hubspot_sync!` and `record.hubspot_delete!` return `true` (truthy, as
+  if everything had succeeded) without enqueuing any job.
+- Internal `Etlify::Synchronizer.call` / `Etlify::Deleter.call` return the
+  symbol `:disabled` (useful for logging and batch statistics).
+- `Etlify::StaleRecords::BatchSync` silently skips the disabled CRM and still
+  processes the enabled ones.
+
 ### Declaring a CRM-synced model
 
 ```ruby

@@ -154,6 +154,7 @@ module Etlify
 
     def crm_sync!(crm_name: nil, async: true, job_class: nil)
       raise ArgumentError, "crm_name is required" if crm_name.nil?
+      return true unless Etlify::CRM.enabled?(crm_name)
       return false unless allow_sync_for?(crm_name)
 
       if async
@@ -172,6 +173,7 @@ module Etlify
 
     def crm_delete!(crm_name: nil)
       raise ArgumentError, "crm_name is required" if crm_name.nil?
+      return true unless Etlify::CRM.enabled?(crm_name)
 
       Etlify::Deleter.call(self, crm_name: crm_name)
     end

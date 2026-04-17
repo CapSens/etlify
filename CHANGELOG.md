@@ -1,5 +1,9 @@
 # UNRELEASED
 
+# V0.11.0
+
+- Feat: Add `enabled:` flag to `Etlify::CRM.register` (default `true`). When a CRM is registered with `enabled: false`, all sync and delete calls become a no-op: `Model#crm_sync!` and `Model#crm_delete!` return `true` without enqueuing any job, `Etlify::Synchronizer.call` and `Etlify::Deleter.call` return `:disabled`, `Etlify::BatchSynchronizer.call` returns stats with `disabled: true`, and `Etlify::StaleRecords::BatchSync.call` silently skips disabled CRMs while still processing enabled ones. No adapter call, no write to `crm_synchronisations`. Useful to keep Etlify dormant in development or test environments. New public helper `Etlify::CRM.enabled?(name)` (returns `true` for unknown CRMs as a safe default).
+
 # V0.10.0
 
 - Feat: Extract `DefaultHttp` into a shared class (`lib/etlify/adapters/default_http.rb`) for reuse across adapters.

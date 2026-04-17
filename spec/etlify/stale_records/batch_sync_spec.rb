@@ -476,6 +476,64 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
     end
   end
 
+  describe "with a disabled CRM" do
+    let(:crm_config) do
+      {
+        hubspot: {
+          adapter: Etlify::Adapters::NullAdapter.new,
+          id_property: "email",
+          crm_object_type: "contacts",
+        },
+        salesforce: {
+          adapter: Etlify::Adapters::NullAdapter.new,
+          id_property: "email",
+          crm_object_type: "contacts",
+        },
+      }
+    end
+
+    before do
+      allow(User).to receive(:etlify_crms).and_return(crm_config)
+      allow(Etlify::CRM).to receive(:enabled?).and_call_original
+      allow(Etlify::CRM).to receive(:enabled?).with(:hubspot)
+                                              .and_return(false)
+    end
+
+    it "skips the disabled CRM in async mode and still enqueues the others",
+       :aggregate_failures do
+      create_user!(index: 1)
+      create_user!(index: 2)
+
+      stats = described_class.call(async: true, batch_size: 10)
+
+      expect(stats[:total]).to eq(2)
+      expect(stats[:per_model]["User"]).to eq(2)
+
+      jobs = aj_enqueued_jobs
+             .select { |j| j[:job] == Etlify::BatchSyncJob }
+      expect(jobs.size).to eq(1)
+      expect(jobs.first[:args][0]).to eq("salesforce")
+    end
+
+    it "skips the disabled CRM in sync mode and still processes the others",
+       :aggregate_failures do
+      called_crms = []
+      allow(Etlify::Synchronizer).to receive(:call) do |_record, crm_name:|
+        called_crms << crm_name
+        :synced
+      end
+
+      create_user!(index: 1)
+      create_user!(index: 2)
+
+      stats = described_class.call(async: false, batch_size: 10)
+
+      expect(stats[:total]).to eq(2)
+      expect(called_crms).to all(eq(:salesforce))
+      expect(called_crms.size).to eq(2)
+    end
+  end
+
   describe "multiple models in async mode" do
     it "aggregates per_model counts across models and CRMs" do
       crm_config = {
