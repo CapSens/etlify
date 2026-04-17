@@ -26,7 +26,7 @@ module Etlify
           )
         end
 
-        validate_enabled!(enabled)
+        validate_enabled_type!(enabled)
         validate_rate_limit!(options[:rate_limit]) if options[:rate_limit]
 
         copied_options =
@@ -79,8 +79,8 @@ module Etlify
         )
       end
 
-      def validate_enabled!(enabled)
-        return if enabled.is_a?(TrueClass) || enabled.is_a?(FalseClass)
+      def validate_enabled_type!(enabled)
+        return if [true, false].include?(enabled)
 
         raise ArgumentError, "enabled must be a boolean (true or false)"
       end
