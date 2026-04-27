@@ -629,6 +629,67 @@ adapter.batch_delete!(
 
 ---
 
+## Microsoft Dynamics 365 adapter (Web API v9.2)
+
+Etlify ships with `Etlify::Adapters::Dynamics365Adapter` for Microsoft Dynamics 365 / Dataverse. It uses `Net::HTTP` (no external dependency) and authenticates via OAuth 2.0 `client_credentials`. The bearer token is cached in-memory per process, refreshed before expiration, and re-fetched transparently on a 401 response (one retry per request).
+
+### Configuration
+
+```ruby
+Etlify.configure do |config|
+  Etlify::CRM.register(
+    :dynamics_365,
+    adapter: Etlify::Adapters::Dynamics365Adapter.new(
+      tenant_id: ENV["DYNAMICS_TENANT_ID"],
+      client_id: ENV["DYNAMICS_CLIENT_ID"],
+      client_secret: ENV["DYNAMICS_CLIENT_SECRET"],
+      resource_uri: ENV["DYNAMICS_RESOURCE_URI"]
+    ),
+    enabled: Rails.env.production? || Rails.env.staging?,
+    options: {
+      job_class: Etlify::SyncJob,
+      rate_limit: { max_requests: 100, period: 5 },
+    }
+  )
+end
+```
+
+`resource_uri` is the Dataverse environment URL (e.g. `https://contoso.crm.dynamics.com`). `api_version` defaults to `"9.2"` and can be overridden.
+
+### Behaviour
+
+- `object_type`: the Dataverse entity set name (plural, lowercase — e.g. `"contacts"`, `"accounts"`, `"leads"`).
+- `id_property`: the **alternate key** field name configured on the Dataverse entity (e.g. `"emailaddress1"` for contacts). Must be declared as an alternate key in Dataverse, otherwise upsert returns a 400.
+- `crm_id`: if provided, the adapter PATCHes the record directly by GUID and skips alternate-key resolution.
+- The Dataverse GUID is read back from the `OData-EntityId` response header after every upsert/create.
+
+### Example: Contact upsert
+
+```ruby
+class User < ApplicationRecord
+  include Etlify::Model
+
+  dynamics_365_etlified_with(
+    serializer: DynamicsContactSerializer,
+    crm_object_type: "contacts",
+    id_property: "emailaddress1",
+    sync_if: ->(user) { user.email.present? }
+  )
+end
+
+# Later
+user.dynamics_365_sync!
+```
+
+### Limitations
+
+- **No batch support in v1.** `batch_upsert!` and `batch_delete!` raise `NotImplementedError`. `Etlify::BatchSyncJob` is therefore not usable with `:dynamics_365` — register the CRM with `options: { job_class: Etlify::SyncJob }` (per-record sync). Native Dataverse `$batch` (multipart/mixed changeset) support is planned for a follow-up release.
+- **Alternate keys must exist in Dataverse.** The property passed as `id_property` has to be configured as an alternate key on the target entity beforehand.
+- **Dataverse Service Protection limits.** Dataverse enforces ~6000 requests / 300s / application user. The recommended `rate_limit` above (`100/5s`) keeps a comfortable margin.
+- **Token cache is per process.** Each Sidekiq worker maintains its own bearer cache (~1 OAuth round-trip per worker per hour, negligible).
+
+---
+
 ## Writing your own adapter
 
 Implement the following interface:
@@ -737,6 +798,7 @@ expect(fake_adapter).to have_received(:upsert!).with(
 - `Etlify::Adapters::NullAdapter` (default; no-op)
 - `Etlify::Adapters::HubspotV3Adapter` (API v3, with batch support)
 - `Etlify::Adapters::AirtableV0Adapter` (API v0, with batch support)
+- `Etlify::Adapters::Dynamics365Adapter` (Dataverse Web API v9.2, OAuth client_credentials, single-record only)
 
 ---
 

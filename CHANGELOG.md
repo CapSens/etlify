@@ -1,5 +1,8 @@
 # UNRELEASED
 
+- Feat: Add `Dynamics365Adapter` for Microsoft Dynamics 365 / Dataverse Web API v9.2. Supports OAuth 2.0 `client_credentials` with an in-memory bearer token cache (auto-refresh on expiration and on 401 retry), single-record `upsert!` (PATCH by GUID, PATCH by Dataverse alternate key, or POST create depending on inputs) and `delete!` (DELETE by GUID with idempotent 404). Batch operations (`batch_upsert!` / `batch_delete!`) raise `NotImplementedError` in this version — use `Etlify::SyncJob` per record. Native `$batch` multipart support is planned for a follow-up release. Zero external dependency (Net::HTTP + JSON stdlib).
+- Feat: `Etlify::Adapters::DefaultHttp#request` now returns `{status:, body:, headers:}` (previously `{status:, body:}`). Backward-compatible: existing adapters ignore the new key. Required by `Dynamics365Adapter` to read the `OData-EntityId` response header that carries the Dataverse GUID after upsert.
+
 # V0.11.0
 
 - Feat: Add `enabled:` flag to `Etlify::CRM.register` (default `true`). When a CRM is registered with `enabled: false`, all sync and delete calls become a no-op: `Model#crm_sync!` and `Model#crm_delete!` return `true` without enqueuing any job, `Etlify::Synchronizer.call` and `Etlify::Deleter.call` return `:disabled`, `Etlify::BatchSynchronizer.call` returns stats with `disabled: true`, and `Etlify::StaleRecords::BatchSync.call` silently skips disabled CRMs while still processing enabled ones. No adapter call, no write to `crm_synchronisations`. Useful to keep Etlify dormant in development or test environments. New public helper `Etlify::CRM.enabled?(name)` (returns `true` for unknown CRMs as a safe default).
