@@ -132,9 +132,13 @@ module Etlify
 
     # Check if a dependency already has a CRM id, either via CrmSynchronisation
     # (etlified models) or via a direct column like `airtable_id` (legacy models).
+    #
+    # Uses `polymorphic_name` instead of `class.name` because the polymorphic
+    # association on `crm_synchronisations` stores the base class name for STI
+    # subclasses (e.g. "Users::Profile" rather than "Users::NaturalProfile").
     def dependency_has_crm_id?(dep)
       dep_sync = CrmSynchronisation.find_by(
-        resource_type: dep.class.name,
+        resource_type: dep.class.polymorphic_name,
         resource_id: dep.id,
         crm_name: crm_name.to_s
       )

@@ -187,6 +187,33 @@ RSpec.describe Etlify::Synchronizer do
       result = described_class.call(user, crm_name: :hubspot)
       expect(result).to eq(:synced)
     end
+
+    it "proceeds to sync when an STI subclass dependency has a crm_id", :aggregate_failures do
+      startup = StartupCompany.create!(name: "CapSens", domain: "capsens.eu")
+      user.update!(company_id: startup.id)
+
+      # CrmSynchronisation rows are stored using polymorphic_name (base class)
+      # for STI subclasses. The dependency lookup must use the same.
+      CrmSynchronisation.create!(
+        crm_name: "hubspot",
+        crm_id: "hubspot-startup-123",
+        resource: startup
+      )
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            id_property: "id",
+            crm_object_type: "contacts",
+            sync_dependencies: [:company],
+          },
+        }
+      )
+
+      result = described_class.call(user.reload, crm_name: :hubspot)
+      expect(result).to eq(:synced)
+    end
   end
 
   context "sync_dependencies legacy fallback" do

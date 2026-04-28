@@ -1,5 +1,7 @@
 # UNRELEASED
 
+- Fix: `Synchronizer#dependency_has_crm_id?` now uses `polymorphic_name` instead of `class.name` when looking up the dependency's `CrmSynchronisation`. Without this, STI subclasses (e.g. `Users::NaturalProfile` whose `polymorphic_name` is `Users::Profile`) were never matched, the dependency was always considered missing, and a new `PendingSync` row was created on every sync attempt — leading to an infinite buffer/flush loop.
+
 # V0.11.0
 
 - Feat: Add `enabled:` flag to `Etlify::CRM.register` (default `true`). When a CRM is registered with `enabled: false`, all sync and delete calls become a no-op: `Model#crm_sync!` and `Model#crm_delete!` return `true` without enqueuing any job, `Etlify::Synchronizer.call` and `Etlify::Deleter.call` return `:disabled`, `Etlify::BatchSynchronizer.call` returns stats with `disabled: true`, and `Etlify::StaleRecords::BatchSync.call` silently skips disabled CRMs while still processing enabled ones. No adapter call, no write to `crm_synchronisations`. Useful to keep Etlify dormant in development or test environments. New public helper `Etlify::CRM.enabled?(name)` (returns `true` for unknown CRMs as a safe default).
