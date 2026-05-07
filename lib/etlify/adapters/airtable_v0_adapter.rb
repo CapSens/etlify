@@ -91,6 +91,13 @@ module Etlify
         path = @client.base_path(object_type)
         prop_key = id_property.to_s
 
+        # Airtable returns response fields keyed by NAME by default. When the
+        # caller uses field IDs (e.g. "fldXXXXXXXXXXXXXX") for id_property,
+        # we must request the response with field IDs too, otherwise
+        # extract_batch_mapping cannot find the id_property value back and
+        # returns an empty mapping (silently writing crm_id: nil).
+        use_field_ids = prop_key.start_with?("fld")
+
         records.each_slice(BATCH_MAX_SIZE).each_with_object({}) do |slice, mapping|
           body = {
             performUpsert: {
@@ -98,6 +105,7 @@ module Etlify
             },
             records: slice.map { |fields| {fields: stringify_keys(fields)} },
           }
+          body[:returnFieldsByFieldId] = true if use_field_ids
 
           response = @client.patch(path, body: body)
           @client.raise_for_error!(response, path: path)

@@ -1,5 +1,7 @@
 # UNRELEASED
 
+- Fix: `AirtableV0Adapter#batch_upsert!` now passes `returnFieldsByFieldId: true` in the `performUpsert` request when `id_property` is an Airtable field ID (e.g. `"fldXXXXXXXXXXXXXX"`). Without this flag, Airtable returned the response fields keyed by name, while `extract_batch_mapping` looked them up by ID, leading to an empty mapping. The records were still created/updated on Airtable, but `BatchSynchronizer` then wrote `crm_id: nil` (with `last_digest` set) on the `crm_synchronisations` row, leaving it stuck (subsequent syncs hit `:not_modified` due to digest match). The flag is added conditionally based on the `fld` prefix to preserve backward compatibility with field-name usage.
+
 # V0.11.0
 
 - Feat: Add `enabled:` flag to `Etlify::CRM.register` (default `true`). When a CRM is registered with `enabled: false`, all sync and delete calls become a no-op: `Model#crm_sync!` and `Model#crm_delete!` return `true` without enqueuing any job, `Etlify::Synchronizer.call` and `Etlify::Deleter.call` return `:disabled`, `Etlify::BatchSynchronizer.call` returns stats with `disabled: true`, and `Etlify::StaleRecords::BatchSync.call` silently skips disabled CRMs while still processing enabled ones. No adapter call, no write to `crm_synchronisations`. Useful to keep Etlify dormant in development or test environments. New public helper `Etlify::CRM.enabled?(name)` (returns `true` for unknown CRMs as a safe default).

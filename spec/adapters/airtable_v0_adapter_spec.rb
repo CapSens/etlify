@@ -719,6 +719,85 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       end
     end
 
+    context "when id_property is a field NAME" do
+      it "does NOT request returnFieldsByFieldId, response keys are names" do
+        records = [{Email: "a@b.com", Name: "A"}]
+
+        expect(http).to receive(:request).with(
+          :patch,
+          anything,
+          headers: anything,
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            !json.key?("returnFieldsByFieldId")
+          end
+        ).and_return(
+          {
+            status: 200,
+            body: {
+              records: [
+                {
+                  "id" => "recA",
+                  "fields" => {"Email" => "a@b.com"},
+                },
+              ],
+            }.to_json,
+          }
+        )
+
+        result = adapter.batch_upsert!(
+          object_type: table,
+          records: records,
+          id_property: "Email"
+        )
+
+        expect(result).to eq("a@b.com" => "recA")
+      end
+    end
+
+    context "when id_property is a field ID" do
+      it "requests returnFieldsByFieldId so the response is keyed by field ID" do
+        # Without returnFieldsByFieldId, Airtable returns fields keyed by name
+        # (e.g. "🟣 Mail 1") even when the request uses field IDs. Then
+        # extract_batch_mapping looks up fields["fld..."] => nil and the
+        # mapping is silently empty, causing BatchSynchronizer to write
+        # crm_id: nil with last_digest set, leaving the row stuck forever.
+        email_field_id = "fld0aeED3e0g1qqsx"
+        records = [{email_field_id => "a@b.com"}]
+
+        expect(http).to receive(:request).with(
+          :patch,
+          anything,
+          headers: anything,
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            json["returnFieldsByFieldId"] == true &&
+              json["performUpsert"]["fieldsToMergeOn"] == [email_field_id]
+          end
+        ).and_return(
+          {
+            status: 200,
+            body: {
+              records: [
+                {
+                  "id" => "recA",
+                  "fields" => {email_field_id => "a@b.com"},
+                },
+              ],
+            }.to_json,
+          }
+        )
+
+        result = adapter.batch_upsert!(
+          object_type: table,
+          records: records,
+          id_property: email_field_id
+        )
+
+        expect(result).to eq("a@b.com" => "recA")
+      end
+    end
+
     it "raises on invalid arguments", :aggregate_failures do
       expect do
         adapter.batch_upsert!(
