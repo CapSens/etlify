@@ -72,6 +72,7 @@ RSpec.configure do |config|
       end
 
       create_table :companies, force: true do |t|
+        t.string :type
         t.string :name
         t.string :domain
         t.timestamps
@@ -96,6 +97,10 @@ RSpec.configure do |config|
 
     class Company < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
       has_many :crm_synchronisations, as: :resource, dependent: :destroy
+    end
+
+    # STI subclass to exercise polymorphic_name behavior in tests.
+    class StartupCompany < Company # rubocop:disable Lint/ConstantDefinitionInBlock
     end
 
     class User < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
