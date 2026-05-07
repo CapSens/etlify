@@ -17,6 +17,7 @@ module Etlify
     #   adapter.batch_delete!(object_type: "tblXXX", crm_ids: ["recAAA", "recBBB"])
     class AirtableV0Adapter
       BATCH_MAX_SIZE = 10
+      AIRTABLE_FIELD_ID_REGEX = /\Afld[A-Za-z0-9]{14}\z/.freeze
 
       def rate_limiter
         @client.rate_limiter
@@ -96,7 +97,7 @@ module Etlify
         # we must request the response with field IDs too, otherwise
         # extract_batch_mapping cannot find the id_property value back and
         # returns an empty mapping (silently writing crm_id: nil).
-        use_field_ids = prop_key.start_with?("fld")
+        use_field_ids = AIRTABLE_FIELD_ID_REGEX.match?(prop_key)
 
         records.each_slice(BATCH_MAX_SIZE).each_with_object({}) do |slice, mapping|
           body = {

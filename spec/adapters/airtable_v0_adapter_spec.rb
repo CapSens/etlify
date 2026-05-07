@@ -798,6 +798,71 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       end
     end
 
+    context "with multiple batches and field ID id_property" do
+      it "sends returnFieldsByFieldId on every slice", :aggregate_failures do
+        email_field_id = "fld0aeED3e0g1qqsx"
+        records = (1..12).map { |i| {email_field_id => "u#{i}@test.com"} }
+
+        # First batch: 10 records
+        expect(http).to receive(:request).with(
+          :patch,
+          anything,
+          headers: anything,
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            json["returnFieldsByFieldId"] == true &&
+              json["records"].size == 10
+          end
+        ).and_return(
+          {
+            status: 200,
+            body: {
+              records: (1..10).map do |i|
+                {
+                  "id" => "rec#{i}",
+                  "fields" => {email_field_id => "u#{i}@test.com"},
+                }
+              end,
+            }.to_json,
+          }
+        )
+
+        # Second batch: 2 records
+        expect(http).to receive(:request).with(
+          :patch,
+          anything,
+          headers: anything,
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            json["returnFieldsByFieldId"] == true &&
+              json["records"].size == 2
+          end
+        ).and_return(
+          {
+            status: 200,
+            body: {
+              records: (11..12).map do |i|
+                {
+                  "id" => "rec#{i}",
+                  "fields" => {email_field_id => "u#{i}@test.com"},
+                }
+              end,
+            }.to_json,
+          }
+        )
+
+        result = adapter.batch_upsert!(
+          object_type: table,
+          records: records,
+          id_property: email_field_id
+        )
+
+        expect(result.size).to eq(12)
+        expect(result["u1@test.com"]).to eq("rec1")
+        expect(result["u12@test.com"]).to eq("rec12")
+      end
+    end
+
     it "raises on invalid arguments", :aggregate_failures do
       expect do
         adapter.batch_upsert!(
