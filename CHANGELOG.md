@@ -1,4 +1,4 @@
-# UNRELEASED
+# V0.11.1
 
 - Fix: `AirtableV0Adapter#batch_upsert!` now passes `returnFieldsByFieldId: true` in the `performUpsert` request when `id_property` is an Airtable field ID (e.g. `"fldXXXXXXXXXXXXXX"`). Without this flag, Airtable returned the response fields keyed by name, while `extract_batch_mapping` looked them up by ID, leading to an empty mapping. The records were still created/updated on Airtable, but `BatchSynchronizer` then wrote `crm_id: nil` (with `last_digest` set) on the `crm_synchronisations` row, leaving it stuck (subsequent syncs hit `:not_modified` due to digest match). The flag is added conditionally based on the `fld` prefix to preserve backward compatibility with field-name usage.
 

@@ -1,3 +1,79 @@
+# UPGRADING FROM 0.11.0 -> 0.11.1
+
+## 1. Overview
+
+Etlify 0.11.1 is a bugfix release for `AirtableV0Adapter#batch_upsert!` when
+the configured `id_property` is an Airtable **field ID** (e.g.
+`"fldXXXXXXXXXXXXXX"`) rather than a field name.
+
+**Bug fix:**
+
+- `AirtableV0Adapter#batch_upsert!` now passes `returnFieldsByFieldId: true`
+  in the `performUpsert` request when `id_property` matches the Airtable
+  field ID format (`fld` followed by 14 alphanumeric characters). Without
+  this flag, Airtable returned response fields keyed by name while
+  `extract_batch_mapping` looked them up by ID, producing an empty mapping.
+  Records were still upserted in Airtable, but `BatchSynchronizer` then
+  persisted `crm_id: nil` on the matching `crm_synchronisations` row,
+  leaving the sync stuck (subsequent runs hit `:not_modified` due to the
+  digest match).
+
+---
+
+## 2. Database migrations
+
+No database migration required for this upgrade.
+
+---
+
+## 3. Configuration changes
+
+No configuration changes required. The flag is added conditionally based on
+the `fld` prefix, preserving backward compatibility with field-name usage.
+
+---
+
+## 4. Recovering stuck records (if applicable)
+
+If you ran 0.11.0 (or earlier) with `AirtableV0Adapter` and a field-ID
+`id_property`, some `crm_synchronisations` rows may have `crm_id: nil`
+together with a `last_digest`. Those records will not be re-synced
+automatically because the digest still matches.
+
+To recover them after upgrading, reset the digest on the affected rows so
+they are picked up by the next `StaleRecords::BatchSync`:
+
+```ruby
+CrmSynchronisation
+  .where(crm_name: "airtable", crm_id: nil)
+  .where.not(last_digest: nil)
+  .update_all(last_digest: nil)
+```
+
+The next batch sync will re-run `batch_upsert!` and now correctly populate
+`crm_id`.
+
+---
+
+## 5. QA & testing checklist
+
+- [ ] `bundle exec rspec` passes.
+- [ ] In a non-production environment with an Airtable field-ID
+      `id_property`, run `BatchSync` and confirm `crm_synchronisations.crm_id`
+      is populated for every synced record.
+- [ ] Existing setups using Airtable **field names** as `id_property` keep
+      working unchanged (no `returnFieldsByFieldId` flag is sent).
+
+---
+
+## 6. Backward compatibility
+
+Fully backward-compatible. The `returnFieldsByFieldId` flag is only added
+when `id_property` matches the Airtable field-ID pattern (`fld` + 14
+alphanumeric characters).
+
+---
+
 # UPGRADING FROM 0.10.0 -> 0.11.0
 
 ## 1. Overview
