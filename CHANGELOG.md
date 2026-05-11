@@ -1,3 +1,7 @@
+# UNRELEASED
+
+- Fix: `BatchSynchronizer#perform_batch_upsert!` now falls back to a per-record `adapter.upsert!` loop when `batch_upsert!` raises `Etlify::ValidationFailed`. Batch endpoints (e.g. Airtable's `performUpsert`) are atomic: a single bad record (duplicate on merge field, dead reference, etc.) makes the whole batch return 422 and, before this fix, the per-record loop where `error_count` is bumped was never reached. Sidekiq retried the whole batch with the same args indefinitely, blocking all healthy records sharing the batch. With the fallback, healthy records are synced sequentially and only the offending record gets its `error_count` incremented — after `max_sync_errors` failures, the Finder excludes it and the batch is unblocked. `Etlify::RateLimited` is still bubbled up to the caller (`BatchSyncJob`) so it can re-enqueue with backoff as before.
+
 # V0.11.1
 
 - Fix: `AirtableV0Adapter#batch_upsert!` now passes `returnFieldsByFieldId: true` in the `performUpsert` request when `id_property` is an Airtable field ID (e.g. `"fldXXXXXXXXXXXXXX"`). Without this flag, Airtable returned the response fields keyed by name, while `extract_batch_mapping` looked them up by ID, leading to an empty mapping. The records were still created/updated on Airtable, but `BatchSynchronizer` then wrote `crm_id: nil` (with `last_digest` set) on the `crm_synchronisations` row, leaving it stuck (subsequent syncs hit `:not_modified` due to digest match). The flag is added conditionally based on the `fld` prefix to preserve backward compatibility with field-name usage.
