@@ -130,14 +130,16 @@ module Etlify
         synced += 1
 
         flush_pending_syncs!(item[:record])
-      rescue => e
+      rescue Etlify::RateLimited
+        raise
+      rescue StandardError => e
         errors += 1
         begin
           item[:sync_line].update!(
             last_error: e.message,
             error_count: item[:sync_line].error_count.to_i + 1
           )
-        rescue
+        rescue StandardError
           # no-op
         end
       end
@@ -180,14 +182,16 @@ module Etlify
         synced += 1
 
         flush_pending_syncs!(item[:record])
-      rescue => e
+      rescue Etlify::RateLimited
+        raise
+      rescue StandardError => e
         errors += 1
         begin
           item[:sync_line].update!(
             last_error: e.message,
             error_count: item[:sync_line].error_count.to_i + 1
           )
-        rescue
+        rescue StandardError
           # no-op
         end
       end
