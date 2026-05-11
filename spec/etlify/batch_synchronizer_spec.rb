@@ -163,6 +163,34 @@ RSpec.describe Etlify::BatchSynchronizer do
       end
     end
 
+    context "when RateLimited is raised in the post-batch per-record loop" do
+      it "re-raises RateLimited and does not bump error_count",
+         :aggregate_failures do
+        user1 = create_user!(index: 1)
+        user2 = create_user!(index: 2)
+
+        allow(adapter).to receive(:batch_upsert!).and_return(
+          {
+            "user1@example.com" => "rec1",
+            "user2@example.com" => "rec2",
+          }
+        )
+
+        allow_any_instance_of(described_class)
+          .to receive(:flush_pending_syncs!)
+          .and_raise(Etlify::RateLimited.new("slow down", status: 429))
+
+        expect do
+          described_class.call([user1, user2], crm_name: :hubspot)
+        end.to raise_error(Etlify::RateLimited, "slow down")
+
+        [user1, user2].each do |user|
+          line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+          expect(line&.error_count.to_i).to eq(0)
+        end
+      end
+    end
+
     context "when adapter.upsert! raises RateLimited during fallback" do
       it "re-raises RateLimited so BatchSyncJob can re-enqueue with backoff",
          :aggregate_failures do
