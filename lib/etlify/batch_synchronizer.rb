@@ -130,14 +130,68 @@ module Etlify
         synced += 1
 
         flush_pending_syncs!(item[:record])
-      rescue => e
+      rescue Etlify::RateLimited
+        raise
+      rescue StandardError => e
         errors += 1
         begin
           item[:sync_line].update!(
             last_error: e.message,
             error_count: item[:sync_line].error_count.to_i + 1
           )
-        rescue
+        rescue StandardError
+          # no-op
+        end
+      end
+
+      {synced: synced, errors: errors}
+    rescue Etlify::ValidationFailed
+      # Airtable's performUpsert (and similar batch endpoints) is atomic:
+      # a single bad record (duplicate on merge field, dead reference, ...)
+      # makes the whole batch fail with 422. Without a fallback, the batch
+      # is stuck forever (Sidekiq retries with same args, same failure) and
+      # error_count is never bumped on any record since we raise BEFORE the
+      # per-record loop above.
+      # Fall back to a sequential per-record upsert! to isolate the offender:
+      # healthy records get synced and only the bad one gets its error_count
+      # incremented, allowing the Finder to eventually exclude it via
+      # max_sync_errors after enough failures.
+      fallback_to_sequential_upsert!(ready_items)
+    end
+
+    def fallback_to_sequential_upsert!(ready_items)
+      synced = 0
+      errors = 0
+      now = Time.current
+
+      ready_items.each do |item|
+        crm_id = @adapter.upsert!(
+          payload: item[:payload],
+          id_property: @conf[:id_property],
+          object_type: @conf[:crm_object_type]
+        )
+
+        item[:sync_line].update!(
+          crm_name: @crm_name,
+          crm_id: crm_id.presence || item[:sync_line].crm_id,
+          last_digest: item[:digest],
+          last_synced_at: now,
+          last_error: nil,
+          error_count: 0
+        )
+        synced += 1
+
+        flush_pending_syncs!(item[:record])
+      rescue Etlify::RateLimited
+        raise
+      rescue StandardError => e
+        errors += 1
+        begin
+          item[:sync_line].update!(
+            last_error: e.message,
+            error_count: item[:sync_line].error_count.to_i + 1
+          )
+        rescue StandardError
           # no-op
         end
       end

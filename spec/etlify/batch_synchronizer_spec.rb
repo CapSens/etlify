@@ -120,6 +120,102 @@ RSpec.describe Etlify::BatchSynchronizer do
       expect(stats[:synced]).to eq(0)
     end
 
+    context "when adapter.batch_upsert! raises ValidationFailed" do
+      it "falls back to per-record upsert! to isolate the offender",
+         :aggregate_failures do
+        user1 = create_user!(index: 1)
+        user2 = create_user!(index: 2)
+        user3 = create_user!(index: 3)
+
+        # The batch upsert fails atomically (one bad record poisons it)
+        allow(adapter).to receive(:batch_upsert!)
+          .and_raise(Etlify::ValidationFailed.new("boom", status: 422))
+
+        # Per-record fallback: user1 and user3 succeed, user2 fails
+        allow(adapter).to receive(:upsert!) do |payload:, **|
+          email = payload[:email] || payload["email"]
+          case email
+          when "user2@example.com"
+            raise Etlify::ValidationFailed.new("bad record", status: 422)
+          else
+            "rec_#{email}"
+          end
+        end
+
+        stats = described_class.call([user1, user2, user3], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(2)
+        expect(stats[:errors]).to eq(1)
+
+        line1 = CrmSynchronisation.find_by(resource: user1, crm_name: "hubspot")
+        line2 = CrmSynchronisation.find_by(resource: user2, crm_name: "hubspot")
+        line3 = CrmSynchronisation.find_by(resource: user3, crm_name: "hubspot")
+
+        expect(line1.crm_id).to eq("rec_user1@example.com")
+        expect(line1.error_count).to eq(0)
+
+        expect(line2.crm_id).to be_nil
+        expect(line2.error_count).to eq(1)
+        expect(line2.last_error).to include("bad record")
+
+        expect(line3.crm_id).to eq("rec_user3@example.com")
+        expect(line3.error_count).to eq(0)
+      end
+    end
+
+    context "when RateLimited is raised in the post-batch per-record loop" do
+      it "re-raises RateLimited and does not bump error_count",
+         :aggregate_failures do
+        user1 = create_user!(index: 1)
+        user2 = create_user!(index: 2)
+
+        allow(adapter).to receive(:batch_upsert!).and_return(
+          {
+            "user1@example.com" => "rec1",
+            "user2@example.com" => "rec2",
+          }
+        )
+
+        allow_any_instance_of(described_class)
+          .to receive(:flush_pending_syncs!)
+          .and_raise(Etlify::RateLimited.new("slow down", status: 429))
+
+        expect do
+          described_class.call([user1, user2], crm_name: :hubspot)
+        end.to raise_error(Etlify::RateLimited, "slow down")
+
+        [user1, user2].each do |user|
+          line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+          expect(line&.error_count.to_i).to eq(0)
+        end
+      end
+    end
+
+    context "when adapter.upsert! raises RateLimited during fallback" do
+      it "re-raises RateLimited so BatchSyncJob can re-enqueue with backoff",
+         :aggregate_failures do
+        user1 = create_user!(index: 1)
+        user2 = create_user!(index: 2)
+
+        allow(adapter).to receive(:batch_upsert!)
+          .and_raise(Etlify::ValidationFailed.new("boom", status: 422))
+
+        rate_limited = Etlify::RateLimited.new("slow down", status: 429)
+        allow(adapter).to receive(:upsert!).and_raise(rate_limited)
+
+        expect do
+          described_class.call([user1, user2], crm_name: :hubspot)
+        end.to raise_error(Etlify::RateLimited, "slow down")
+
+        # Neither record should have its error_count bumped: RateLimited
+        # is a transient throttling signal, not a per-record failure.
+        [user1, user2].each do |user|
+          line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+          expect(line&.error_count.to_i).to eq(0)
+        end
+      end
+    end
+
     context "when the CRM is disabled" do
       before do
         allow(Etlify::CRM).to receive(:enabled?).with(:hubspot)
