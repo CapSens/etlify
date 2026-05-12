@@ -1,4 +1,4 @@
-# UPGRADING FROM 0.11.0 -> 0.11.1
+# UPGRADING FROM 0.11.0 -> 0.11.2
 
 ## 1. Overview
 
@@ -129,14 +129,14 @@ registration time. Omitting the option keeps the previous behaviour
 
 ## 4. Behaviour when a CRM is disabled
 
-| Entry point | Return value | Side effects |
-| --- | --- | --- |
-| `record.<crm>_sync!` / `record.crm_sync!` | `true` | No job enqueued, no adapter call |
-| `record.<crm>_delete!` / `record.crm_delete!` | `true` | No adapter call |
-| `Etlify::Synchronizer.call` | `:disabled` | No adapter call, no write to `crm_synchronisations` |
-| `Etlify::Deleter.call` | `:disabled` | No adapter call |
-| `Etlify::BatchSynchronizer.call` | stats hash with `disabled: true`, `skipped: records.size` | No adapter call |
-| `Etlify::StaleRecords::BatchSync.call` | disabled CRMs silently skipped, enabled CRMs processed normally | Stats only reflect enabled CRMs |
+| Entry point                                   | Return value                                                    | Side effects                                        |
+| --------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------- |
+| `record.<crm>_sync!` / `record.crm_sync!`     | `true`                                                          | No job enqueued, no adapter call                    |
+| `record.<crm>_delete!` / `record.crm_delete!` | `true`                                                          | No adapter call                                     |
+| `Etlify::Synchronizer.call`                   | `:disabled`                                                     | No adapter call, no write to `crm_synchronisations` |
+| `Etlify::Deleter.call`                        | `:disabled`                                                     | No adapter call                                     |
+| `Etlify::BatchSynchronizer.call`              | stats hash with `disabled: true`, `skipped: records.size`       | No adapter call                                     |
+| `Etlify::StaleRecords::BatchSync.call`        | disabled CRMs silently skipped, enabled CRMs processed normally | Stats only reflect enabled CRMs                     |
 
 Existing `crm_synchronisations` rows are left untouched when a CRM is
 disabled — flipping `enabled:` back to `true` resumes normal sync without any

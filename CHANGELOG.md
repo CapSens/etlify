@@ -1,5 +1,7 @@
 # UNRELEASED
 
+# V0.11.2
+
 - Fix: `BatchSynchronizer#perform_batch_upsert!` now falls back to a per-record `adapter.upsert!` loop when `batch_upsert!` raises `Etlify::ValidationFailed`. Batch endpoints (e.g. Airtable's `performUpsert`) are atomic: a single bad record (duplicate on merge field, dead reference, etc.) makes the whole batch return 422 and, before this fix, the per-record loop where `error_count` is bumped was never reached. Sidekiq retried the whole batch with the same args indefinitely, blocking all healthy records sharing the batch. With the fallback, healthy records are synced sequentially and only the offending record gets its `error_count` incremented — after `max_sync_errors` failures, the Finder excludes it and the batch is unblocked. `Etlify::RateLimited` is explicitly re-raised in both the batch path and the per-record fallback loop, so it always bubbles up to `BatchSyncJob` which can re-enqueue with backoff (and is not mis-classified as a per-record error that would bump `error_count`).
 
 # V0.11.1
