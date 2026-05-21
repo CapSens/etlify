@@ -20,7 +20,7 @@ Etlify sits beside your app; it does **not** try to own your domain or backgroun
 | ----------- | ------------------------------------------------------------- | --------------------------------------------------- |
 | DSL         | `include Etlify::Model` + `etlified_with(...)` on your models | Opt-in sync with a single line; clear, local intent |
 | Serialisers | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
-| Adapters    | HubSpot & Airtable adapters included; plug your own           | Swap CRMs without touching model code               |
+| Adapters    | HubSpot, Airtable & Intercom adapters included; plug your own | Swap CRMs without touching model code               |
 | Idempotence | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
 | Jobs        | `crm_sync!` enqueues an ActiveJob; batch sync via `BatchSyncJob` | Fits your queue; built-in rate limiting              |
 | Delete      | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
@@ -663,6 +663,85 @@ adapter.batch_delete!(
 
 ---
 
+## Intercom adapter
+
+Etlify ships with `Etlify::Adapters::IntercomAdapter`. It uses `Net::HTTP` (no external dependency) and targets the Intercom REST API. The adapter is generic on `object_type`: the value declared in `crm_object_type:` is interpolated directly in the URL, so the same adapter handles `"contacts"`, `"companies"`, and any other Intercom resource that exposes the standard `POST /{type}`, `PUT /{type}/{id}`, `DELETE /{type}/{id}`, `POST /{type}/search` quadruplet.
+
+### Configuration
+
+```ruby
+Etlify.configure do |config|
+  Etlify::CRM.register(
+    :intercom,
+    adapter: Etlify::Adapters::IntercomAdapter.new(
+      access_token: ENV["INTERCOM_ACCESS_TOKEN"],
+      region: :eu,          # :us (default), :eu, :au
+      api_version: "2.14"   # default
+    ),
+    options: {
+      rate_limit: { max_requests: 1_000, period: 10.seconds },
+    }
+  )
+end
+```
+
+### Behaviour
+
+- `object_type`: the Intercom resource (e.g. `"contacts"`, `"companies"`).
+- `id_property`: unique attribute used to deduplicate (e.g. `"external_id"` for contacts, `"company_id"` for companies). The adapter searches via `POST /{object_type}/search` with the query `{field:, operator: "=", value:}`.
+- `crm_id`: if known (already persisted in `crm_synchronisations`), the adapter skips the search and `PUT`s directly on `/{object_type}/{crm_id}`.
+- For contacts, the `email` attribute is lowercased before search and create (parity with the HubSpot adapter).
+- Intercom does **not** expose batch endpoints: `batch_upsert!` and `batch_delete!` loop sequentially over `upsert!` / `delete!`. The configured `rate_limit` is enforced on every HTTP call, so behaviour stays correct under high volumes.
+
+### Example: contact upsert by external_id
+
+```ruby
+class User < ApplicationRecord
+  include Etlify::Model
+
+  intercom_etlified_with(
+    serializer: UserIntercomSerializer,
+    crm_object_type: "contacts",
+    id_property: :external_id,
+    sync_if: ->(user) { user.email.present? }
+  )
+end
+
+# Later
+user.intercom_crm_sync!
+```
+
+### Example: company upsert by company_id
+
+```ruby
+class Company < ApplicationRecord
+  include Etlify::Model
+
+  intercom_etlified_with(
+    serializer: CompanyIntercomSerializer,
+    crm_object_type: "companies",
+    id_property: :company_id
+  )
+end
+```
+
+### Errors
+
+Intercom returns errors as `{"type": "error.list", "errors": [{"code", "message", "field"}, ...]}`. The adapter maps them to the standard Etlify hierarchy:
+
+| HTTP status | Raised class               |
+| ----------- | -------------------------- |
+| 401, 403    | `Etlify::Unauthorized`     |
+| 404         | `Etlify::NotFound`         |
+| 409, 422    | `Etlify::ValidationFailed` |
+| 429         | `Etlify::RateLimited`      |
+| other 4xx/5xx | `Etlify::ApiError`       |
+| transport   | `Etlify::TransportError`   |
+
+`delete!` returns `false` on 404 (already-gone) instead of raising, mirroring the HubSpot and Airtable adapters.
+
+---
+
 ## Writing your own adapter
 
 Implement the following interface:
@@ -791,8 +870,9 @@ expect(fake_adapter).to have_received(:upsert!).with(
   contract as the real adapters: a blank `match_value` without a known
   `crm_id` raises `ArgumentError`, so dev/test surfaces the same `:error`
   results as production instead of fake-syncing with a generated id.
-- `Etlify::Adapters::HubspotV3Adapter` (API v3, with batch support)
-- `Etlify::Adapters::AirtableV0Adapter` (API v0, with batch support)
+- `Etlify::Adapters::HubspotV3Adapter` (API v3, with native batch support)
+- `Etlify::Adapters::AirtableV0Adapter` (API v0, with native batch support)
+- `Etlify::Adapters::IntercomAdapter` (REST API, sequential batch via single-record loop)
 
 ---
 
