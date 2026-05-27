@@ -29,8 +29,13 @@ RSpec.describe Etlify::BatchSyncJob do
     )
   end
 
-  def lock_key(crm_name)
-    "etlify:batch_sync_lock:#{crm_name}"
+  def chunk_lock_key(crm_name, pairs)
+    digest = ::Digest::SHA256.hexdigest(pairs.to_s)
+    "etlify:batch_sync_lock:#{crm_name}:chunk:#{digest}"
+  end
+
+  def discovery_lock_key(crm_name)
+    "etlify:batch_sync_lock:#{crm_name}:discovery"
   end
 
   describe "#perform with explicit record pairs" do
@@ -208,7 +213,7 @@ RSpec.describe Etlify::BatchSyncJob do
   end
 
   describe "concurrency lock" do
-    it "prevents duplicate batch jobs for the same CRM" do
+    it "prevents duplicate chunk jobs with identical pairs for the same CRM" do
       user = create_user!(index: 1)
       pairs = ["User", user.id]
 
@@ -217,6 +222,17 @@ RSpec.describe Etlify::BatchSyncJob do
 
       jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
       expect(jobs.size).to eq(1)
+    end
+
+    it "allows different chunks for the same CRM to be enqueued in parallel" do
+      user1 = create_user!(index: 1)
+      user2 = create_user!(index: 2)
+
+      described_class.perform_later("hubspot", ["User", user1.id])
+      described_class.perform_later("hubspot", ["User", user2.id])
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(jobs.size).to eq(2)
     end
 
     it "allows batch jobs for different CRMs" do
@@ -236,19 +252,37 @@ RSpec.describe Etlify::BatchSyncJob do
       Etlify::CRM.registry.delete(:salesforce)
     end
 
-    it "clears the lock after perform" do
+    it "prevents concurrent discovery runs for the same CRM" do
+      described_class.perform_later("hubspot")
+      described_class.perform_later("hubspot")
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(jobs.size).to eq(1)
+    end
+
+    it "does not let a chunk job collide with a discovery run for the same CRM" do
+      user = create_user!(index: 1)
+
+      described_class.perform_later("hubspot")
+      described_class.perform_later("hubspot", ["User", user.id])
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(jobs.size).to eq(2)
+    end
+
+    it "clears the chunk lock after perform" do
       user = create_user!(index: 1)
       pairs = ["User", user.id]
 
       described_class.perform_later("hubspot", pairs)
-      expect(cache.exist?(lock_key("hubspot"))).to be(true)
+      expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(true)
 
       aj_perform_enqueued_jobs
 
-      expect(cache.exist?(lock_key("hubspot"))).to be(false)
+      expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(false)
     end
 
-    it "clears the lock even when perform raises" do
+    it "clears the chunk lock even when perform raises" do
       user = create_user!(index: 1)
       pairs = ["User", user.id]
 
@@ -256,7 +290,7 @@ RSpec.describe Etlify::BatchSyncJob do
         .and_raise(RuntimeError, "unexpected failure")
 
       described_class.perform_later("hubspot", pairs)
-      expect(cache.exist?(lock_key("hubspot"))).to be(true)
+      expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(true)
 
       begin
         aj_perform_enqueued_jobs
@@ -264,7 +298,7 @@ RSpec.describe Etlify::BatchSyncJob do
         nil
       end
 
-      expect(cache.exist?(lock_key("hubspot"))).to be(false)
+      expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(false)
     end
   end
 

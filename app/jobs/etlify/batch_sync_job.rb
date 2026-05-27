@@ -138,16 +138,32 @@ module Etlify
 
     def reenqueue(crm_name, remaining_pairs, wait:)
       cache = Etlify.config.cache_store
-      cache.delete(batch_lock_key([crm_name]))
+      # Clear the current job's lock so a re-enqueue with overlapping or
+      # identical pairs can acquire its own lock (the around_perform ensure
+      # would otherwise only run after this method returns).
+      cache.delete(batch_lock_key(arguments))
 
       flat = remaining_pairs.flatten
       self.class.set(wait: wait.seconds)
           .perform_later(crm_name.to_s, flat)
     end
 
+    # Lock key strategy:
+    # - Discovery mode (no record_pairs): one lock per CRM to prevent
+    #   piling up redundant discovery runs (cron-triggered).
+    # - Chunk mode (explicit record_pairs): one lock per (CRM, pairs content)
+    #   so independent chunks can be enqueued and executed in parallel while
+    #   still deduplicating identical re-enqueues.
     def batch_lock_key(args)
-      crm_name = args.first
-      "etlify:batch_sync_lock:#{crm_name}"
+      crm_name = args[0]
+      record_pairs = args[1]
+
+      if record_pairs.nil?
+        "etlify:batch_sync_lock:#{crm_name}:discovery"
+      else
+        digest = ::Digest::SHA256.hexdigest(record_pairs.to_s)
+        "etlify:batch_sync_lock:#{crm_name}:chunk:#{digest}"
+      end
     end
   end
 end

@@ -1,3 +1,8 @@
+# UNRELEASED
+
+- Fix: `Etlify::StaleRecords::BatchSync#enqueue_batch_jobs` now respects the `batch_size` option in async mode. Previously, all stale pairs for a CRM were flattened into a single `BatchSyncJob`, regardless of `batch_size`. With many records, the resulting HTTP fan-out (e.g. one `BatchSyncJob` doing hundreds of batch upsert calls) was prone to `Net::ReadTimeout`: a single timeout would crash the entire job and Sidekiq would retry forever with the same oversized args. Pairs are now sliced by `batch_size` and enqueued as N independent `BatchSyncJob`s — a failure is bounded to one chunk instead of the full stale population.
+- Fix: `Etlify::BatchSyncJob` lock key now differentiates discovery runs from explicit chunk runs. The previous global per-CRM lock (`etlify:batch_sync_lock:<crm>`) silently dropped sibling chunk enqueues from the new sliced `BatchSync`. Discovery mode (no `record_pairs` argument) keeps a per-CRM lock under `:discovery` to prevent piling up cron-triggered runs. Chunk mode (explicit `record_pairs`) uses a per-content lock under `:chunk:<sha256(pairs)>` so independent chunks can be enqueued and executed in parallel while identical re-enqueues are still deduplicated. The `reenqueue` path now clears the current job's lock based on its actual arguments rather than the CRM-only key, so a `RateLimited` re-enqueue with overlapping pairs can succeed.
+
 # V0.12.0
 
 This version contains Breaking Changes ⚠️ (please refer to `UPGRADE-GUIDE.md`)

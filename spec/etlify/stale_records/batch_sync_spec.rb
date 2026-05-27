@@ -150,7 +150,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(ids.sort).to eq([user1.id, user2.id].sort)
     end
 
-    it "honors batch_size while collecting all ids per CRM" do
+    it "chunks records into multiple BatchSyncJobs respecting batch_size" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
@@ -173,11 +173,13 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
 
       jobs = aj_enqueued_jobs
              .select { |j| j[:job] == Etlify::BatchSyncJob }
-      expect(jobs.size).to eq(1)
+      expect(jobs.size).to eq(2)
 
-      flat_pairs = jobs.first[:args][1]
-      ids = flat_pairs.each_slice(2).map(&:last)
-      expect(ids.sort).to eq([user1.id, user2.id, user3.id].sort)
+      all_ids = jobs.flat_map { |job| job[:args][1].each_slice(2).map(&:last) }
+      expect(all_ids.sort).to eq([user1.id, user2.id, user3.id].sort)
+
+      chunk_sizes = jobs.map { |job| job[:args][1].each_slice(2).count }.sort
+      expect(chunk_sizes).to eq([1, 2])
     end
 
     it "returns zeros when there is nothing to sync" do

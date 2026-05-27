@@ -115,14 +115,18 @@ module Etlify
         {count: count, errors: errors}
       end
 
-      # Enqueue one BatchSyncJob per CRM with all collected pairs.
+      # Enqueue one BatchSyncJob per CRM and per batch_size slice of pairs.
+      # Splitting bounds the blast radius of a failure to a single chunk
+      # instead of the full stale population.
       def enqueue_batch_jobs(pending_pairs)
         pending_pairs.each do |crm, pairs|
           next if pairs.empty?
 
           job_class = job_class_for(crm)
-          flat_pairs = pairs.flatten
-          job_class.perform_later(crm.to_s, flat_pairs)
+
+          pairs.each_slice(@batch_size) do |chunk|
+            job_class.perform_later(crm.to_s, chunk.flatten)
+          end
         end
       end
 
