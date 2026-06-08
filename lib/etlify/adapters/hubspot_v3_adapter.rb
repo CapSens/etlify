@@ -120,6 +120,40 @@ module Etlify
         end
       end
 
+      # Batch update via HubSpot's native /batch/update endpoint, targeting
+      # each object by its known hs_object_id (crm_id) instead of id_property.
+      # @param object_type [String] CRM object type
+      # @param records [Array<Hash>] each {crm_id:, properties:}
+      # @return [Hash{String => String}] identity mapping {crm_id => crm_id}
+      #   for successfully submitted records
+      def batch_update!(object_type:, records:)
+        raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
+        raise ArgumentError, "records must be a non-empty Array" if !records.is_a?(Array) || records.empty?
+
+        path = "/crm/v3/objects/#{object_type}/batch/update"
+
+        records.each_slice(BATCH_MAX_SIZE).each_with_object({}) do |slice, mapping|
+          body = {
+            inputs: slice.map do |record|
+              {
+                id: fetch_crm_id(record),
+                properties: stringify_keys(record[:properties] || record["properties"] || {}),
+              }
+            end,
+          }
+
+          resp = request(:post, path, body: body)
+          raise_for_error!(resp, path: path)
+
+          # crm_id is the input key and does not change on update: build the
+          # mapping from the inputs rather than parsing the response body.
+          slice.each do |record|
+            id = fetch_crm_id(record)
+            mapping[id] = id unless id.empty?
+          end
+        end
+      end
+
       # Batch delete (archive) via HubSpot's native /batch/archive endpoint.
       # @param object_type [String] CRM object type
       # @param crm_ids [Array<String>] hs_object_id values to archive
@@ -319,6 +353,10 @@ module Etlify
 
       def stringify_keys(hash)
         hash.each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+      end
+
+      def fetch_crm_id(record)
+        (record[:crm_id] || record["crm_id"]).to_s
       end
     end
   end

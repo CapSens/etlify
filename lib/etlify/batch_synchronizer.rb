@@ -99,104 +99,156 @@ module Etlify
       [:ready, item]
     end
 
+    # Split ready records by whether they already have a crm_id:
+    #   - with crm_id    -> update directly by crm_id (batch_update!)
+    #   - without crm_id -> reconcile/create via id_property (batch_upsert!)
+    # Each group is processed and recovered independently so a failure in one
+    # never re-processes the other.
     def perform_batch_upsert!(ready_items)
-      payloads = ready_items.map { |item| item[:payload] }
-      id_prop = @conf[:id_property].to_s
+      with_crm_id, without_crm_id =
+        ready_items.partition { |item| item[:sync_line].crm_id.present? }
 
-      # Let RateLimited bubble up to the caller (BatchSyncJob)
-      # so it can re-enqueue with remaining records.
+      stats = {synced: 0, errors: 0}
+      merge_stats!(stats, update_existing_batch!(with_crm_id)) if with_crm_id.any?
+      merge_stats!(stats, upsert_new_batch!(without_crm_id)) if without_crm_id.any?
+      stats
+    end
+
+    # Records that already have a crm_id are updated by crm_id, so a changed
+    # id_property (e.g. email) can no longer trigger a duplicate/collision.
+    def update_existing_batch!(items)
+      records = items.map do |item|
+        {crm_id: item[:sync_line].crm_id, properties: item[:payload]}
+      end
+
+      @adapter.batch_update!(
+        object_type: @conf[:crm_object_type],
+        records: records
+      )
+
+      apply_batch_results!(items) { |item| item[:sync_line].crm_id }
+    rescue Etlify::RateLimited
+      # Always bubble up so BatchSyncJob can re-enqueue with backoff.
+      raise
+    rescue Etlify::Error => e
+      raise unless per_record_error?(e)
+
+      fallback_to_sequential_upsert!(items)
+    end
+
+    # First-time sync (no crm_id yet): reconcile through id_property using the
+    # CRM's native batch upsert endpoint, then fall back to sequential upserts
+    # to isolate the offending record on a deterministic per-record error.
+    def upsert_new_batch!(items)
+      id_prop = @conf[:id_property].to_s
+      payloads = items.map { |item| item[:payload] }
+
       crm_id_mapping = @adapter.batch_upsert!(
         object_type: @conf[:crm_object_type],
         records: payloads,
         id_property: id_prop
       )
 
-      synced = 0
-      errors = 0
-      now = Time.current
-
-      ready_items.each do |item|
-        id_value = extract_id_value(item[:payload], id_prop)
-        crm_id = crm_id_mapping[id_value]
-
-        item[:sync_line].update!(
-          crm_name: @crm_name,
-          crm_id: crm_id.presence || item[:sync_line].crm_id,
-          last_digest: item[:digest],
-          last_synced_at: now,
-          last_error: nil,
-          error_count: 0
-        )
-        synced += 1
-
-        flush_pending_syncs!(item[:record])
-      rescue Etlify::RateLimited
-        raise
-      rescue StandardError => e
-        errors += 1
-        begin
-          item[:sync_line].update!(
-            last_error: e.message,
-            error_count: item[:sync_line].error_count.to_i + 1
-          )
-        rescue StandardError
-          # no-op
-        end
+      apply_batch_results!(items) do |item|
+        crm_id_mapping[extract_id_value(item[:payload], id_prop)]
       end
+    rescue Etlify::RateLimited
+      raise
+    rescue Etlify::Error => e
+      raise unless per_record_error?(e)
 
-      {synced: synced, errors: errors}
-    rescue Etlify::ValidationFailed
-      # Airtable's performUpsert (and similar batch endpoints) is atomic:
-      # a single bad record (duplicate on merge field, dead reference, ...)
-      # makes the whole batch fail with 422. Without a fallback, the batch
-      # is stuck forever (Sidekiq retries with same args, same failure) and
-      # error_count is never bumped on any record since we raise BEFORE the
-      # per-record loop above.
-      # Fall back to a sequential per-record upsert! to isolate the offender:
-      # healthy records get synced and only the bad one gets its error_count
-      # incremented, allowing the Finder to eventually exclude it via
-      # max_sync_errors after enough failures.
-      fallback_to_sequential_upsert!(ready_items)
+      # Batch endpoints are atomic: a single bad record (duplicate on merge
+      # field, unique-property collision, dead reference, ...) fails the whole
+      # batch. Without this fallback the batch is stuck forever (same args,
+      # same failure) and error_count is never bumped. The sequential loop
+      # isolates the offender so healthy records sync and only the bad one
+      # bumps error_count, letting the Finder exclude it via max_sync_errors.
+      fallback_to_sequential_upsert!(items)
     end
 
-    def fallback_to_sequential_upsert!(ready_items)
+    def fallback_to_sequential_upsert!(items)
       synced = 0
       errors = 0
       now = Time.current
 
-      ready_items.each do |item|
+      items.each do |item|
         crm_id = @adapter.upsert!(
           payload: item[:payload],
           id_property: @conf[:id_property],
-          object_type: @conf[:crm_object_type]
+          object_type: @conf[:crm_object_type],
+          crm_id: item[:sync_line].crm_id
         )
 
-        item[:sync_line].update!(
-          crm_name: @crm_name,
-          crm_id: crm_id.presence || item[:sync_line].crm_id,
-          last_digest: item[:digest],
-          last_synced_at: now,
-          last_error: nil,
-          error_count: 0
-        )
+        mark_synced!(item, crm_id, now)
         synced += 1
-
-        flush_pending_syncs!(item[:record])
       rescue Etlify::RateLimited
         raise
       rescue StandardError => e
         errors += 1
-        begin
-          item[:sync_line].update!(
-            last_error: e.message,
-            error_count: item[:sync_line].error_count.to_i + 1
-          )
-        rescue StandardError
-          # no-op
-        end
+        bump_error!(item, e)
       end
 
       {synced: synced, errors: errors}
+    end
+
+    # Persist results of a native batch call. The block returns the crm_id for
+    # a given item (the existing one for updates, the mapped one for upserts).
+    def apply_batch_results!(items)
+      synced = 0
+      errors = 0
+      now = Time.current
+
+      items.each do |item|
+        mark_synced!(item, yield(item), now)
+        synced += 1
+      rescue Etlify::RateLimited
+        raise
+      rescue StandardError => e
+        errors += 1
+        bump_error!(item, e)
+      end
+
+      {synced: synced, errors: errors}
+    end
+
+    def mark_synced!(item, crm_id, now)
+      item[:sync_line].update!(
+        crm_name: @crm_name,
+        crm_id: crm_id.presence || item[:sync_line].crm_id,
+        last_digest: item[:digest],
+        last_synced_at: now,
+        last_error: nil,
+        error_count: 0
+      )
+
+      flush_pending_syncs!(item[:record])
+    end
+
+    def bump_error!(item, error)
+      item[:sync_line].update!(
+        last_error: error.message,
+        error_count: item[:sync_line].error_count.to_i + 1
+      )
+    rescue StandardError
+      # no-op
+    end
+
+    def merge_stats!(acc, partial)
+      acc[:synced] += partial[:synced]
+      acc[:errors] += partial[:errors]
+      acc
+    end
+
+    # A deterministic, per-record CRM error worth isolating via the sequential
+    # fallback: validation failures and other 4xx (e.g. HubSpot's 400 on a
+    # unique-property collision), but never auth (401/403) or rate limit (429)
+    # — those must bubble up. 5xx / transport errors also bubble (job retry).
+    def per_record_error?(error)
+      return true if error.is_a?(Etlify::ValidationFailed)
+      return false unless error.is_a?(Etlify::ApiError)
+
+      status = error.status.to_i
+      (400..499).cover?(status) && ![401, 403, 429].include?(status)
     end
 
     def extract_id_value(payload, id_prop)

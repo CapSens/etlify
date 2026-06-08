@@ -63,7 +63,8 @@ module Etlify
           crm_id = adapter.upsert!(
             payload: payload,
             id_property: conf[:id_property],
-            object_type: conf[:crm_object_type]
+            object_type: conf[:crm_object_type],
+            crm_id: sync_line.crm_id
           )
 
           sync_line.update!(

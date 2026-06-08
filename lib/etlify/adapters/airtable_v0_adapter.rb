@@ -114,6 +114,41 @@ module Etlify
         end
       end
 
+      # Batch update targeting each record by its known Airtable record ID
+      # (crm_id) instead of id_property. Uses Airtable's PATCH with explicit
+      # record ids (up to 10 records per request).
+      # @param object_type [String] Airtable table id/name
+      # @param records [Array<Hash>] each {crm_id:, properties:}
+      # @return [Hash{String => String}] identity mapping {crm_id => crm_id}
+      def batch_update!(object_type:, records:)
+        validate_string!(:object_type, object_type)
+        if !records.is_a?(Array) || records.empty?
+          raise ArgumentError,
+                "records must be a non-empty Array"
+        end
+
+        path = @client.base_path(object_type)
+
+        records.each_slice(BATCH_MAX_SIZE).each_with_object({}) do |slice, mapping|
+          body = {
+            records: slice.map do |record|
+              {
+                id: fetch_crm_id(record),
+                fields: stringify_keys(record[:properties] || record["properties"] || {}),
+              }
+            end,
+          }
+
+          response = @client.patch(path, body: body)
+          @client.raise_for_error!(response, path: path)
+
+          slice.each do |record|
+            id = fetch_crm_id(record)
+            mapping[id] = id unless id.empty?
+          end
+        end
+      end
+
       # Note: if a later slice fails, records from earlier
       # slices are already deleted. Callers should handle
       # partial success when processing large batches.
@@ -222,6 +257,10 @@ module Etlify
 
       def stringify_keys(hash)
         hash.transform_keys(&:to_s)
+      end
+
+      def fetch_crm_id(record)
+        (record[:crm_id] || record["crm_id"]).to_s
       end
 
       def validate_string!(name, value)
