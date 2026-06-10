@@ -1,7 +1,7 @@
 require "rails_helper"
 
 class FailingAdapter
-  def upsert!(payload:, id_property:, object_type:)
+  def upsert!(payload:, id_property:, object_type:, crm_id: nil)
     raise "boom"
   end
 end
@@ -79,7 +79,8 @@ RSpec.describe Etlify::Synchronizer do
       expect(adapter_instance).to receive(:upsert!).with(
         payload: expected_payload,
         id_property: "id",
-        object_type: "contacts"
+        object_type: "contacts",
+        crm_id: nil
       ).and_return("crm-xyz")
 
       result = described_class.call(user, crm_name: :hubspot)
@@ -87,6 +88,30 @@ RSpec.describe Etlify::Synchronizer do
 
       expect(result).to eq(:synced)
       expect(line.crm_id).to eq("crm-xyz")
+    end
+
+    it "passes the existing crm_id when the record is already synced",
+       :aggregate_failures do
+      CrmSynchronisation.create!(
+        resource: user,
+        crm_name: "hubspot",
+        crm_id: "existing-123",
+        last_synced_at: Time.current - 86_400,
+        last_digest: "stale-digest"
+      )
+
+      adapter_instance = instance_double(Etlify::Adapters::NullAdapter)
+      allow(Etlify::Adapters::NullAdapter).to receive(:new)
+        .and_return(adapter_instance)
+
+      received = nil
+      allow(adapter_instance).to receive(:upsert!) do |**kwargs|
+        received = kwargs
+        "existing-123"
+      end
+
+      expect(described_class.call(user, crm_name: :hubspot)).to eq(:synced)
+      expect(received[:crm_id]).to eq("existing-123")
     end
   end
 

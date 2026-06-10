@@ -936,6 +936,64 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
     end
   end
 
+  describe "#batch_update!" do
+    it "PATCHes records by id (no performUpsert) and returns identity mapping",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :patch,
+        "https://api.airtable.com/v0/#{base_id}/#{table}",
+        headers: hash_including("Authorization" => "Bearer #{token}"),
+        body: satisfy do |body|
+          json = JSON.parse(body)
+          !json.key?("performUpsert") &&
+            json["records"].size == 2 &&
+            json["records"][0]["id"] == "recA" &&
+            json["records"][0]["fields"] == {"Email" => "a@b.com"} &&
+            json["records"][1]["id"] == "recC"
+        end
+      ).and_return({status: 200, body: {records: []}.to_json})
+
+      result = adapter.batch_update!(
+        object_type: table,
+        records: [
+          {crm_id: "recA", properties: {Email: "a@b.com"}},
+          {crm_id: "recC", properties: {Email: "c@d.com"}},
+        ]
+      )
+      expect(result).to eq("recA" => "recA", "recC" => "recC")
+    end
+
+    it "splits into slices of 10", :aggregate_failures do
+      records = (1..12).map { |i| {crm_id: "rec#{i}", properties: {N: i}} }
+
+      expect(http).to receive(:request).with(
+        :patch, "https://api.airtable.com/v0/#{base_id}/#{table}", anything
+      ).twice.and_return({status: 200, body: {records: []}.to_json})
+
+      result = adapter.batch_update!(object_type: table, records: records)
+      expect(result.size).to eq(12)
+    end
+
+    it "raises NotFound when Airtable returns 404 for a dead record id" do
+      allow(http).to receive(:request).and_return(
+        {status: 404, body: {error: {type: "NOT_FOUND", message: "x"}}.to_json}
+      )
+
+      expect do
+        adapter.batch_update!(
+          object_type: table,
+          records: [{crm_id: "recDead", properties: {Email: "a@b.com"}}]
+        )
+      end.to raise_error(Etlify::NotFound)
+    end
+
+    it "raises ArgumentError on an empty records array" do
+      expect do
+        adapter.batch_update!(object_type: table, records: [])
+      end.to raise_error(ArgumentError, /non-empty Array/)
+    end
+  end
+
   describe "#batch_delete!" do
     context "with a single batch (<= 10 IDs)" do
       it "sends one DELETE and returns results",

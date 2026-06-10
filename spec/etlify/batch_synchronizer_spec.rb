@@ -241,4 +241,163 @@ RSpec.describe Etlify::BatchSynchronizer do
       end
     end
   end
+
+  describe "records that already have a crm_id" do
+    def synced_user!(index:, crm_id:)
+      user = create_user!(index: index)
+      CrmSynchronisation.create!(
+        resource: user,
+        crm_name: "hubspot",
+        crm_id: crm_id,
+        last_synced_at: Time.current - 86_400,
+        last_digest: "stale-digest"
+      )
+      user
+    end
+
+    it "updates them via batch_update! by crm_id, not batch_upsert!",
+       :aggregate_failures do
+      user = synced_user!(index: 1, crm_id: "rec_1")
+
+      expect(adapter).to receive(:batch_update!).with(
+        object_type: "contacts",
+        records: [
+          hash_including(
+            crm_id: "rec_1",
+            properties: hash_including(email: "user1@example.com")
+          ),
+        ]
+      ).and_call_original
+      expect(adapter).not_to receive(:batch_upsert!)
+
+      stats = described_class.call([user], crm_name: :hubspot)
+
+      expect(stats[:synced]).to eq(1)
+      line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+      expect(line.crm_id).to eq("rec_1")
+      expect(line.last_synced_at).to be_within(2).of(Time.current)
+    end
+
+    it "routes new and existing records to the right endpoints",
+       :aggregate_failures do
+      existing = synced_user!(index: 1, crm_id: "rec_1")
+      fresh = create_user!(index: 2)
+
+      expect(adapter).to receive(:batch_update!).with(
+        object_type: "contacts",
+        records: [hash_including(crm_id: "rec_1")]
+      ).and_call_original
+      expect(adapter).to receive(:batch_upsert!).with(
+        object_type: "contacts",
+        records: [hash_including(email: "user2@example.com")],
+        id_property: "email"
+      ).and_call_original
+
+      stats = described_class.call([existing, fresh], crm_name: :hubspot)
+      expect(stats[:synced]).to eq(2)
+    end
+
+    it "isolates the offender via sequential fallback on batch_update! failure",
+       :aggregate_failures do
+      user1 = synced_user!(index: 1, crm_id: "rec_1")
+      user2 = synced_user!(index: 2, crm_id: "rec_dead")
+
+      allow(adapter).to receive(:batch_update!)
+        .and_raise(Etlify::NotFound.new("batch failed", status: 404))
+      allow(adapter).to receive(:upsert!) do |crm_id:, **|
+        if crm_id == "rec_dead"
+          raise Etlify::NotFound.new("contact deleted", status: 404)
+        end
+
+        crm_id
+      end
+
+      stats = described_class.call([user1, user2], crm_name: :hubspot)
+
+      expect(stats[:synced]).to eq(1)
+      expect(stats[:errors]).to eq(1)
+      line2 = CrmSynchronisation.find_by(resource: user2, crm_name: "hubspot")
+      expect(line2.error_count).to eq(1)
+      expect(line2.last_error).to include("contact deleted")
+    end
+
+    it "bubbles RateLimited from batch_update! without falling back",
+       :aggregate_failures do
+      user = synced_user!(index: 1, crm_id: "rec_1")
+
+      allow(adapter).to receive(:batch_update!)
+        .and_raise(Etlify::RateLimited.new("slow down", status: 429))
+      expect(adapter).not_to receive(:upsert!)
+
+      expect do
+        described_class.call([user], crm_name: :hubspot)
+      end.to raise_error(Etlify::RateLimited)
+    end
+  end
+
+  describe "post-batch per-record persistence" do
+    it "bumps error_count when a record update fails after a successful batch",
+       :aggregate_failures do
+      user = create_user!(index: 1)
+
+      allow(adapter).to receive(:batch_upsert!)
+        .and_return("user1@example.com" => "rec1")
+      allow_any_instance_of(described_class)
+        .to receive(:flush_pending_syncs!)
+        .and_raise(StandardError.new("post-update boom"))
+
+      stats = described_class.call([user], crm_name: :hubspot)
+
+      expect(stats[:synced]).to eq(0)
+      expect(stats[:errors]).to eq(1)
+      line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+      expect(line.error_count).to eq(1)
+      expect(line.last_error).to include("post-update boom")
+    end
+  end
+
+  describe "sequential fallback trigger scope" do
+    it "falls back on a 400 ApiError (HubSpot unique-property collision)" do
+      user = create_user!(index: 1)
+      allow(adapter).to receive(:batch_upsert!)
+        .and_raise(Etlify::ApiError.new("collision", status: 400))
+      allow(adapter).to receive(:upsert!).and_return("rec_1")
+
+      stats = described_class.call([user], crm_name: :hubspot)
+      expect(stats[:synced]).to eq(1)
+    end
+
+    it "does not fall back on RateLimited (bubbles up)", :aggregate_failures do
+      user = create_user!(index: 1)
+      allow(adapter).to receive(:batch_upsert!)
+        .and_raise(Etlify::RateLimited.new("slow down", status: 429))
+      expect(adapter).not_to receive(:upsert!)
+
+      expect do
+        described_class.call([user], crm_name: :hubspot)
+      end.to raise_error(Etlify::RateLimited)
+    end
+
+    it "does not fall back on Unauthorized (bubbles up)", :aggregate_failures do
+      user = create_user!(index: 1)
+      allow(adapter).to receive(:batch_upsert!)
+        .and_raise(Etlify::Unauthorized.new("forbidden", status: 401))
+      expect(adapter).not_to receive(:upsert!)
+
+      expect do
+        described_class.call([user], crm_name: :hubspot)
+      end.to raise_error(Etlify::Unauthorized)
+    end
+
+    it "does not fall back on a 5xx ApiError (bubbles for job retry)" do
+      user = create_user!(index: 1)
+      allow(adapter).to receive(:batch_upsert!)
+        .and_raise(Etlify::ApiError.new("server error", status: 500))
+      expect(adapter).not_to receive(:upsert!)
+
+      expect do
+        described_class.call([user], crm_name: :hubspot)
+      end.to raise_error(Etlify::ApiError)
+    end
+  end
 end

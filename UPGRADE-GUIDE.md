@@ -1,3 +1,32 @@
+# UPGRADING FROM 0.11.2 -> 0.11.3
+
+## 1. Overview
+
+Behavior change (no API change, no migration). Once a record has a `crm_id`,
+Etlify now updates it **by `crm_id`** instead of re-resolving it through
+`id_property`. `id_property` is only used for the **first** sync (to reconcile
+with a record that may already exist on the CRM). This prevents duplicate
+creation / unique-property collisions when the `id_property` value (e.g.
+`email`) of an already-synced record changes.
+
+**What to expect after upgrading:**
+
+- A `crm_id` that points to a **deleted** CRM record now raises
+  `Etlify::NotFound` and bumps `error_count` (it is no longer silently
+  re-created under a new record). After fixing the data, call
+  `CrmSynchronisation#reset_error_count!` to re-enable the sync.
+- `BatchSynchronizer` now isolates the offending record (sequential fallback)
+  on any deterministic 4xx CRM error, not only `422`. Healthy records keep
+  syncing; only the bad one bumps `error_count` until `max_sync_errors`
+  excludes it via the Finder.
+
+No custom adapter changes are required: adapters already accept `crm_id:` on
+`upsert!`. Custom adapters that implement `batch_upsert!` should also implement
+`batch_update!(object_type:, records:)` if they want the batch path to update
+already-synced records by id (otherwise those records are not batched).
+
+---
+
 # UPGRADING FROM 0.11.0 -> 0.11.2
 
 ## 1. Overview

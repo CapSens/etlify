@@ -1166,6 +1166,87 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
     end
   end
 
+  describe "#batch_update!" do
+    let(:update_url) { "https://api.hubapi.com/crm/v3/objects/contacts/batch/update" }
+
+    it "POSTs to batch/update targeting each object by crm_id",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :post,
+        update_url,
+        headers: hash_including("Authorization" => "Bearer #{token}"),
+        body: satisfy { |body|
+          json = JSON.parse(body)
+          inputs = json["inputs"]
+          inputs.size == 2 &&
+            inputs[0]["id"] == "101" &&
+            inputs[0]["properties"] == {"email" => "john@example.com"} &&
+            !inputs[0].key?("idProperty") &&
+            inputs[1]["id"] == "102" &&
+            inputs[1]["properties"] == {"email" => "jane@example.com"}
+        }
+      ).and_return({status: 200, body: {results: []}.to_json})
+
+      result = adapter.batch_update!(
+        object_type: "contacts",
+        records: [
+          {crm_id: "101", properties: {email: "john@example.com"}},
+          {crm_id: "102", properties: {email: "jane@example.com"}},
+        ]
+      )
+
+      # Identity mapping built from inputs (crm_id does not change on update).
+      expect(result).to eq("101" => "101", "102" => "102")
+    end
+
+    it "slices records into batches of BATCH_MAX_SIZE", :aggregate_failures do
+      records = (1..150).map { |i| {crm_id: i.to_s, properties: {n: i}} }
+
+      expect(http).to receive(:request).with(
+        :post, update_url, anything
+      ).twice.and_return({status: 200, body: {results: []}.to_json})
+
+      result = adapter.batch_update!(object_type: "contacts", records: records)
+      expect(result.size).to eq(150)
+    end
+
+    it "stringifies symbol keys in properties", :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :post,
+        update_url,
+        headers: anything,
+        body: satisfy { |body|
+          props = JSON.parse(body)["inputs"].first["properties"]
+          props.keys.all? { |k| k.is_a?(String) }
+        }
+      ).and_return({status: 200, body: {results: []}.to_json})
+
+      adapter.batch_update!(
+        object_type: "contacts",
+        records: [{crm_id: "1", properties: {email: "a@b.com", firstname: "A"}}]
+      )
+    end
+
+    it "raises NotFound when HubSpot returns 404 for a dead crm_id" do
+      allow(http).to receive(:request).and_return(
+        {status: 404, body: {message: "not found", category: "OBJECT_NOT_FOUND"}.to_json}
+      )
+
+      expect do
+        adapter.batch_update!(
+          object_type: "contacts",
+          records: [{crm_id: "dead", properties: {email: "a@b.com"}}]
+        )
+      end.to raise_error(Etlify::NotFound)
+    end
+
+    it "raises ArgumentError on an empty records array" do
+      expect do
+        adapter.batch_update!(object_type: "contacts", records: [])
+      end.to raise_error(ArgumentError, /non-empty Array/)
+    end
+  end
+
   describe "#batch_delete!" do
     let(:archive_url) { "https://api.hubapi.com/crm/v3/objects/contacts/batch/archive" }
 

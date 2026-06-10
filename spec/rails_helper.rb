@@ -39,6 +39,26 @@ RSpec.configure do |config|
     end
   end
 
+  # Isolate process-wide mutable state between examples. The CRM registry and
+  # the config cache store are singletons: a CRM registered (or a batch-sync
+  # lock written) by one example would otherwise leak into the next, making the
+  # suite order-dependent and flaky. We snapshot/restore the registry (rather
+  # than clearing it) so registrations done in before(:all) or group-level
+  # `around` hooks remain visible to the example, while per-example mutations
+  # are rolled back afterwards. The cache store is cleared up front to drop any
+  # leftover batch-sync lock.
+  config.around(:each) do |example|
+    registry_snapshot = Etlify::CRM.registry.dup
+    store = Etlify.config.cache_store
+    store.clear if store.respond_to?(:clear)
+
+    begin
+      example.run
+    ensure
+      Etlify::CRM.registry.replace(registry_snapshot)
+    end
+  end
+
   # suppress ActiveJob and Thor output
   ActiveJob::Base.logger = Logger.new(nil)
   config.before(type: :generator) do
