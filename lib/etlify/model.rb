@@ -51,7 +51,7 @@ module Etlify
         klass.define_singleton_method(dsl_name) do |
           serializer:,
           crm_object_type:,
-          id_property:,
+          match_by:,
           dependencies: [],
           sync_dependencies: [],
           sync_if: ->(_r) { true },
@@ -60,6 +60,8 @@ module Etlify
         |
           raise ArgumentError, "stale_scope must respond to :call" if stale_scope && !stale_scope.respond_to?(:call)
 
+          Etlify::MatchBy.validate!(match_by)
+
           reg = Etlify::CRM.fetch(crm_name)
 
           conf = {
@@ -67,7 +69,7 @@ module Etlify
             guard: sync_if,
             stale_scope: stale_scope,
             crm_object_type: crm_object_type,
-            id_property: id_property,
+            match_by: match_by,
             dependencies: Array(dependencies).map(&:to_sym),
             sync_dependencies: Array(sync_dependencies).map(&:to_sym),
             adapter: reg.adapter,

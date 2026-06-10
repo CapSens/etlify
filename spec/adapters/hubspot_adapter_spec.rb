@@ -10,7 +10,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
   end
 
   describe "#upsert!" do
-    context "when object exists (search by id_property) for native type" do
+    context "when object exists (search by match_property) for native type" do
       it "PATCHes the object and returns its id", :aggregate_failures do
         # 1) Search
         expect(http).to receive(:request).with(
@@ -27,7 +27,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           {status: 200, body: {results: [{"id" => "1234"}]}.to_json}
         )
 
-        # 2) Update
+        # 2) Update: the body is exactly the payload as provided
         expect(http).to receive(:request).with(
           :patch,
           "https://api.hubapi.com/crm/v3/objects/contacts/1234",
@@ -40,15 +40,16 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "john@example.com", firstname: "John"},
-          id_property: "email"
+          payload: {firstname: "John"},
+          match_property: "email",
+          match_value: "john@example.com"
         )
         expect(id).to eq("1234")
       end
     end
 
     context "when crm_id is provided" do
-      it "skips search and PATCHes directly, returning the id",
+      it "skips search and PATCHes directly with the payload as-is",
          :aggregate_failures do
         # Must NOT hit the /search endpoint
         expect(http).not_to receive(:request).with(
@@ -57,23 +58,24 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           anything
         )
 
-        # Direct update on the provided crm_id
+        # Direct update on the provided crm_id: the payload is sent verbatim,
+        # the matching property is neither injected nor stripped.
         expect(http).to receive(:request).with(
           :patch,
           "https://api.hubapi.com/crm/v3/objects/contacts/1234",
           headers: hash_including("Authorization" => "Bearer #{token}"),
           body: satisfy do |body|
             json = JSON.parse(body)
-            props = json["properties"]
-            # We only assert what's essential for this scenario
-            props.is_a?(Hash) && props["firstname"] == "John"
+            json["properties"] ==
+              {"email" => "kept@example.com", "firstname" => "John"}
           end
         ).and_return({status: 200, body: "{}"})
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "ignored@example.com", firstname: "John"},
-          id_property: "email",
+          payload: {email: "kept@example.com", firstname: "John"},
+          match_property: "email",
+          match_value: nil,
           crm_id: "1234"
         )
 
@@ -82,7 +84,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
     end
 
     context "when object does not exist yet (native type)" do
-      it "POSTs a new object and returns its id", :aggregate_failures do
+      it "POSTs a new object with the match property injected", :aggregate_failures do
         # 1) Search → no results
         expect(http).to receive(:request).with(
           :post,
@@ -91,7 +93,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           body: kind_of(String)
         ).and_return({status: 200, body: {results: []}.to_json})
 
-        # 2) Create
+        # 2) Create: payload + {match_property => match_value}
         expect(http).to receive(:request).with(
           :post,
           "https://api.hubapi.com/crm/v3/objects/contacts",
@@ -104,30 +106,55 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "john@example.com", firstname: "John"},
-          id_property: "email"
+          payload: {firstname: "John"},
+          match_property: "email",
+          match_value: "john@example.com"
         )
         expect(id).to eq("5678")
       end
     end
 
-    context "when no id_property is provided (e.g., deals)" do
-      it "creates directly and returns the new id", :aggregate_failures do
-        expect(http).to receive(:request).with(
-          :post,
-          "https://api.hubapi.com/crm/v3/objects/deals",
-          headers: hash_including("Authorization" => "Bearer #{token}"),
-          body: satisfy do |body|
-            json = JSON.parse(body)
-            json["properties"] == {"dealname" => "New deal", "amount" => 1000}
-          end
-        ).and_return({status: 201, body: {id: "9999"}.to_json})
+    context "when match_property is blank" do
+      it "raises ArgumentError", :aggregate_failures do
+        expect do
+          adapter.upsert!(
+            object_type: "deals",
+            payload: {dealname: "New deal"},
+            match_property: nil,
+            match_value: "New deal"
+          )
+        end.to raise_error(ArgumentError, /match_property/)
 
-        id = adapter.upsert!(
-          object_type: "deals",
-          payload: {dealname: "New deal", amount: 1000}
-        )
-        expect(id).to eq("9999")
+        expect do
+          adapter.upsert!(
+            object_type: "deals",
+            payload: {dealname: "New deal"},
+            match_property: "  ",
+            match_value: "New deal"
+          )
+        end.to raise_error(ArgumentError, /match_property/)
+      end
+    end
+
+    context "when match_value is blank and crm_id is unknown" do
+      it "raises ArgumentError", :aggregate_failures do
+        expect do
+          adapter.upsert!(
+            object_type: "contacts",
+            payload: {firstname: "John"},
+            match_property: "email",
+            match_value: nil
+          )
+        end.to raise_error(ArgumentError, /match_value/)
+
+        expect do
+          adapter.upsert!(
+            object_type: "contacts",
+            payload: {firstname: "John"},
+            match_property: "email",
+            match_value: "   "
+          )
+        end.to raise_error(ArgumentError, /match_value/)
       end
     end
 
@@ -143,7 +170,8 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           body: kind_of(String)
         ).and_return({status: 200, body: {results: []}.to_json})
 
-        # 2) Create
+        # 2) Create: the payload already carries the match property,
+        # nothing is injected twice
         expect(http).to receive(:request).with(
           :post,
           "https://api.hubapi.com/crm/v3/objects/#{custom_type}",
@@ -157,7 +185,8 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         id = adapter.upsert!(
           object_type: custom_type,
           payload: {unique_code: "ABC-001", name: "Custom A"},
-          id_property: "unique_code"
+          match_property: "unique_code",
+          match_value: "ABC-001"
         )
         expect(id).to eq("42")
       end
@@ -220,7 +249,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           {status: 200, body: {results: [{"id" => "222"}]}.to_json}
         )
 
-        # 2) Update
+        # 2) Update: payload sent as-is
         expect(http).to receive(:request).with(
           :patch,
           "https://api.hubapi.com/crm/v3/objects/contacts/222",
@@ -233,8 +262,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {email: email_in, firstname: "John"},
-          id_property: "email"
+          payload: {firstname: "John"},
+          match_property: "email",
+          match_value: email_in
         )
         expect(id).to eq("222")
       end
@@ -263,7 +293,8 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           {status: 200, body: {results: [{"id" => "333"}]}.to_json}
         )
 
-        # 2) Update
+        # 2) Update: the matched contact keeps its primary email, the
+        # payload does not carry one
         expect(http).to receive(:request).with(
           :patch,
           "https://api.hubapi.com/crm/v3/objects/contacts/333",
@@ -276,8 +307,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "Alias+Promo@Example.com", firstname: "A"},
-          id_property: "email"
+          payload: {firstname: "A"},
+          match_property: "email",
+          match_value: "Alias+Promo@Example.com"
         )
         expect(id).to eq("333")
       end
@@ -291,7 +323,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           body: kind_of(String)
         ).and_return({status: 200, body: {results: []}.to_json})
 
-        # 2) Create: email should be lowercased in properties
+        # 2) Create: email should be injected lowercased in properties
         expect(http).to receive(:request).with(
           :post,
           "https://api.hubapi.com/crm/v3/objects/contacts",
@@ -305,8 +337,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "John+Tag@Example.com", firstname: "J"},
-          id_property: "email"
+          payload: {firstname: "J"},
+          match_property: "email",
+          match_value: "John+Tag@Example.com"
         )
         expect(id).to eq("444")
       end
@@ -337,8 +370,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "John@Example.com", firstname: "J"},
-          id_property: "email"
+          payload: {firstname: "J"},
+          match_property: "email",
+          match_value: "John@Example.com"
         )
         expect(id).to eq("555")
       end
@@ -353,7 +387,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         body: kind_of(String)
       ).and_return({status: 200, body: {results: []}.to_json})
 
-      # Create includes both properties
+      # Create includes both properties (stringified)
       expect(http).to receive(:request).with(
         :post,
         "https://api.hubapi.com/crm/v3/objects/contacts",
@@ -367,24 +401,42 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       id = adapter.upsert!(
         object_type: "contacts",
         payload: {"email" => "a@b.com", :firstname => "A"},
-        id_property: "email"
+        match_property: "email",
+        match_value: "a@b.com"
       )
       expect(id).to eq("314")
     end
 
     it "raises on invalid arguments", :aggregate_failures do
       expect do
-        adapter.upsert!(object_type: "", payload: {})
+        adapter.upsert!(
+          object_type: "",
+          payload: {},
+          match_property: "email",
+          match_value: "a@b.com"
+        )
       end.to raise_error(ArgumentError)
 
       expect do
-        adapter.upsert!(object_type: "contacts", payload: "not a hash")
+        adapter.upsert!(
+          object_type: "contacts",
+          payload: "not a hash",
+          match_property: "email",
+          match_value: "a@b.com"
+        )
       end.to raise_error(ArgumentError)
     end
 
-    it "creates directly when id_property is missing in payload" do
-      expect(http).not_to receive(:request).with(:post, /\/search/, anything)
+    it "creates with the injected match property when the payload lacks it" do
+      # 1) Search → no results
+      expect(http).to receive(:request).with(
+        :post,
+        "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        headers: hash_including("Authorization" => "Bearer #{token}"),
+        body: kind_of(String)
+      ).and_return({status: 200, body: {results: []}.to_json})
 
+      # 2) Create: {match_property => match_value} injected alongside payload
       expect(http).to receive(:request).with(
         :post,
         "https://api.hubapi.com/crm/v3/objects/contacts",
@@ -393,11 +445,16 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           "Content-Type" => "application/json",
           "Accept" => "application/json"
         ),
-        body: satisfy { |b| JSON.parse(b)["properties"] == {"firstname" => "J"} }
+        body: satisfy do |b|
+          JSON.parse(b)["properties"] == {"firstname" => "J", "email" => "j@e.com"}
+        end
       ).and_return({status: 201, body: {id: "1001"}.to_json})
 
       id = adapter.upsert!(
-        object_type: "contacts", payload: {firstname: "J"}, id_property: "email"
+        object_type: "contacts",
+        payload: {firstname: "J"},
+        match_property: "email",
+        match_value: "j@e.com"
       )
       expect(id).to eq("1001")
     end
@@ -413,8 +470,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
       id = adapter.upsert!(
         object_type: "contacts",
-        payload: {email: "x@y.com", firstname: "X"},
-        id_property: "email"
+        payload: {firstname: "X"},
+        match_property: "email",
+        match_value: "x@y.com"
       )
       expect(id).to eq("1002")
     end
@@ -430,8 +488,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
       id = adapter.upsert!(
         object_type: "contacts",
-        payload: {email: "x@y.com", firstname: "X"},
-        id_property: "email"
+        payload: {firstname: "X"},
+        match_property: "email",
+        match_value: "x@y.com"
       )
       expect(id).to eq("1003")
     end
@@ -447,8 +506,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
       id = adapter.upsert!(
         object_type: "contacts",
-        payload: {email: "john@example.com", firstname: "John"},
-        id_property: "email"
+        payload: {firstname: "John"},
+        match_property: "email",
+        match_value: "john@example.com"
       )
       expect(id).to eq("55")
     end
@@ -467,8 +527,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "john@example.com"},
-          id_property: "email"
+          payload: {firstname: "John"},
+          match_property: "email",
+          match_value: "john@example.com"
         )
       end.to raise_error(Etlify::ValidationFailed, /Invalid/)
     end
@@ -490,8 +551,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "a@b.com"},
-          id_property: "email"
+          payload: {firstname: "A"},
+          match_property: "email",
+          match_value: "a@b.com"
         )
       end.to raise_error(Etlify::RateLimited, /RL/)
     end
@@ -504,13 +566,18 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "x@y.com"},
-          id_property: "email"
+          payload: {firstname: "X"},
+          match_property: "email",
+          match_value: "x@y.com"
         )
       end.to raise_error(Etlify::Unauthorized, /Forbidden/)
     end
 
-    it "extracts unique value whether key is string or symbol", :aggregate_failures do
+    it "does not write the matching property on update when absent from payload",
+       :aggregate_failures do
+      # This is the fix for the HubSpot primary-email overwrite bug: when a
+      # contact is matched through a secondary email, the PATCH must not
+      # rewrite the primary email with the platform value.
       expect(http).to receive(:request).with(
         :post,
         "https://api.hubapi.com/crm/v3/objects/contacts/search",
@@ -531,17 +598,72 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         :patch, "https://api.hubapi.com/crm/v3/objects/contacts/11",
         headers: hash_including("Accept" => "application/json"),
         body: satisfy do |body|
-          json = JSON.parse(body)
-          json["properties"] == {"firstname" => "S"}
+          props = JSON.parse(body)["properties"]
+          props == {"firstname" => "S"} && !props.key?("email")
         end
       ).and_return({status: 200, body: "{}"})
 
       id = adapter.upsert!(
         object_type: "contacts",
-        payload: {"email" => "s@y.com", :firstname => "S"},
-        id_property: :email
+        payload: {firstname: "S"},
+        match_property: :email,
+        match_value: "s@y.com"
       )
       expect(id).to eq("11")
+    end
+
+    context "at creation when the payload already carries the match property" do
+      it "lets the payload value win over match_value (string key)",
+         :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :post, /contacts\/search/, anything
+        ).and_return({status: 200, body: {results: []}.to_json})
+
+        expect(http).to receive(:request).with(
+          :post,
+          "https://api.hubapi.com/crm/v3/objects/contacts",
+          headers: hash_including("Authorization" => "Bearer #{token}"),
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            json["properties"] ==
+              {"email" => "primary@example.com", "firstname" => "A"}
+          end
+        ).and_return({status: 201, body: {id: "21"}.to_json})
+
+        id = adapter.upsert!(
+          object_type: "contacts",
+          payload: {"email" => "primary@example.com", "firstname" => "A"},
+          match_property: "email",
+          match_value: "secondary@example.com"
+        )
+        expect(id).to eq("21")
+      end
+
+      it "lets the payload value win over match_value (symbol key)",
+         :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :post, /contacts\/search/, anything
+        ).and_return({status: 200, body: {results: []}.to_json})
+
+        expect(http).to receive(:request).with(
+          :post,
+          "https://api.hubapi.com/crm/v3/objects/contacts",
+          headers: hash_including("Authorization" => "Bearer #{token}"),
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            json["properties"] ==
+              {"email" => "primary@example.com", "firstname" => "B"}
+          end
+        ).and_return({status: 201, body: {id: "22"}.to_json})
+
+        id = adapter.upsert!(
+          object_type: "contacts",
+          payload: {email: "primary@example.com", firstname: "B"},
+          match_property: "email",
+          match_value: "secondary@example.com"
+        )
+        expect(id).to eq("22")
+      end
     end
 
     it "raises ApiError with generic message when body is non-JSON", :aggregate_failures do
@@ -552,8 +674,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "x@y.com"},
-          id_property: "email"
+          payload: {firstname: "X"},
+          match_property: "email",
+          match_value: "x@y.com"
         )
       end.to raise_error(Etlify::ApiError, /HubSpot API request failed/)
     end
@@ -570,8 +693,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "x@y.com", firstname: "X"},
-          id_property: "email"
+          payload: {firstname: "X"},
+          match_property: "email",
+          match_value: "x@y.com"
         )
       end.to raise_error(Etlify::TransportError, /tcp reset/)
     end
@@ -598,8 +722,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
       id = adapter.upsert!(
         object_type: custom_type,
-        payload: {unique_code: "ABC-001", name: "Custom A"},
-        id_property: "unique_code"
+        payload: {name: "Custom A"},
+        match_property: "unique_code",
+        match_value: "ABC-001"
       )
       expect(id).to eq("42")
     end
@@ -611,8 +736,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         expect do
           adapter.upsert!(
             object_type: "contacts",
-            payload: {email: "john@example.com", firstname: "John"},
-            id_property: "email"
+            payload: {firstname: "John"},
+            match_property: "email",
+            match_value: "john@example.com"
           )
         end.to raise_error(
           Etlify::TransportError, /HTTP transport error: StandardError: boom/
@@ -629,8 +755,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         expect do
           adapter.upsert!(
             object_type: "contacts",
-            payload: {email: "john@example.com"},
-            id_property: "email"
+            payload: {firstname: "John"},
+            match_property: "email",
+            match_value: "john@example.com"
           )
         end.to raise_error(
           Etlify::TransportError, /HTTP transport error: Etlify::Error: boom/
@@ -659,8 +786,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         expect do
           adapter.upsert!(
             object_type: "contacts",
-            payload: {email: "john@example.com"},
-            id_property: "email"
+            payload: {firstname: "John"},
+            match_property: "email",
+            match_value: "john@example.com"
           )
         end.to raise_error(Etlify::Unauthorized, /Invalid credentials.*status=401/)
       end
@@ -683,8 +811,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         expect do
           adapter.upsert!(
             object_type: "contacts",
-            payload: {email: "john@example.com"},
-            id_property: "email"
+            payload: {firstname: "John"},
+            match_property: "email",
+            match_value: "john@example.com"
           )
         end.to raise_error(Etlify::ApiError, /Server error.*status=500/)
       end
@@ -700,21 +829,22 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           body: kind_of(String)
         ).and_return({status: 404, body: ""})
 
-        # 2) Create succeeds
+        # 2) Create succeeds with the injected match property
         expect(http).to receive(:request).with(
           :post,
           "https://api.hubapi.com/crm/v3/objects/contacts",
           headers: hash_including("Authorization" => "Bearer #{token}"),
           body: satisfy do |body|
             json = JSON.parse(body)
-            json["properties"] == {"email" => "j@e.com", "firstname" => "J"}
+            json["properties"] == {"firstname" => "J", "email" => "j@e.com"}
           end
         ).and_return({status: 201, body: {id: "777"}.to_json})
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "j@e.com", firstname: "J"},
-          id_property: "email"
+          payload: {firstname: "J"},
+          match_property: "email",
+          match_value: "j@e.com"
         )
         expect(id).to eq("777")
       end
@@ -752,8 +882,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         expect do
           adapter.upsert!(
             object_type: "contacts",
-            payload: {email: "john@example.com", firstname: "John"},
-            id_property: "email"
+            payload: {firstname: "John"},
+            match_property: "email",
+            match_value: "john@example.com"
           )
         end.to raise_error(
           Etlify::RateLimited, /Rate limit exceeded.*status=429.*correlationId=cid-2/
@@ -789,8 +920,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         begin
           adapter.upsert!(
             object_type: "contacts",
-            payload: {email: "dup@example.com", firstname: "Dup"},
-            id_property: "email"
+            payload: {firstname: "Dup"},
+            match_property: "email",
+            match_value: "dup@example.com"
           )
           raise "expected to raise"
         rescue Etlify::ValidationFailed => error
@@ -827,8 +959,9 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         expect do
           adapter.upsert!(
             object_type: "contacts",
-            payload: {email: "john@example.com", firstname: "John"},
-            id_property: "email"
+            payload: {firstname: "John"},
+            match_property: "email",
+            match_value: "john@example.com"
           )
         end.to raise_error(Etlify::ApiError, /Internal error.*status=500/)
       end
@@ -836,7 +969,11 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
     it "sends standard JSON headers on create", :aggregate_failures do
       expect(http).to receive(:request).with(
-        :post, /\/crm\/v3\/objects\/deals/,
+        :post, /\/crm\/v3\/objects\/deals\/search/, anything
+      ).and_return({status: 200, body: {results: []}.to_json})
+
+      expect(http).to receive(:request).with(
+        :post, "https://api.hubapi.com/crm/v3/objects/deals",
         headers: include(
           "Authorization" => "Bearer #{token}",
           "Content-Type" => "application/json",
@@ -846,7 +983,10 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       ).and_return({status: 201, body: {id: "d1"}.to_json})
 
       id = adapter.upsert!(
-        object_type: "deals", payload: {dealname: "N", amount: 1_000}
+        object_type: "deals",
+        payload: {amount: 1_000},
+        match_property: "dealname",
+        match_value: "N"
       )
       expect(id).to eq("d1")
     end
@@ -941,7 +1081,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
   describe "#batch_upsert!" do
     let(:upsert_url) { "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert" }
 
-    it "POSTs to batch/upsert and returns IDs",
+    it "POSTs to batch/upsert and returns IDs keyed by input value",
        :aggregate_failures do
       expect(http).to receive(:request).with(
         :post,
@@ -953,10 +1093,10 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
           inputs.size == 2 &&
             inputs[0]["id"] == "john@example.com" &&
             inputs[0]["idProperty"] == "email" &&
-            inputs[0]["properties"] == {"email" => "john@example.com", "firstname" => "John"} &&
+            inputs[0]["properties"] == {"firstname" => "John"} &&
             inputs[1]["id"] == "jane@example.com" &&
             inputs[1]["idProperty"] == "email" &&
-            inputs[1]["properties"] == {"email" => "jane@example.com", "firstname" => "Jane"}
+            inputs[1]["properties"] == {"firstname" => "Jane"}
         }
       ).and_return(
         {
@@ -973,11 +1113,11 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
       result = adapter.batch_upsert!(
         object_type: "contacts",
-        records: [
-          {email: "john@example.com", firstname: "John"},
-          {email: "jane@example.com", firstname: "Jane"},
+        inputs: [
+          {value: "john@example.com", properties: {firstname: "John"}},
+          {value: "jane@example.com", properties: {firstname: "Jane"}},
         ],
-        id_property: "email"
+        match_property: "email"
       )
       expect(result).to eq(
         "john@example.com" => "101",
@@ -985,10 +1125,66 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       )
     end
 
-    it "slices records into batches of BATCH_MAX_SIZE",
+    it "keys the mapping by input values as provided when HubSpot lowercases emails",
        :aggregate_failures do
-      records = (1..150).map do |i|
-        {email: "user#{i}@example.com", firstname: "User#{i}"}
+      expect(http).to receive(:request).with(
+        :post,
+        upsert_url,
+        headers: anything,
+        body: satisfy { |body|
+          input = JSON.parse(body)["inputs"].first
+          input["id"] == "john@example.com" && input["idProperty"] == "email"
+        }
+      ).and_return(
+        {
+          status: 200,
+          body: {
+            status: "COMPLETE",
+            results: [
+              {"id" => "201", "properties" => {"email" => "john@example.com"}},
+            ],
+          }.to_json,
+        }
+      )
+
+      result = adapter.batch_upsert!(
+        object_type: "contacts",
+        inputs: [{value: "John@Example.com", properties: {firstname: "John"}}],
+        match_property: "email"
+      )
+      expect(result).to eq("John@Example.com" => "201")
+    end
+
+    it "never injects the matching property into properties",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :post,
+        upsert_url,
+        headers: anything,
+        body: satisfy { |body|
+          props = JSON.parse(body)["inputs"].first["properties"]
+          props == {"firstname" => "A"} && !props.key?("email")
+        }
+      ).and_return(
+        {
+          status: 200,
+          body: {
+            results: [{"id" => "1", "properties" => {"email" => "a@b.com"}}],
+          }.to_json,
+        }
+      )
+
+      adapter.batch_upsert!(
+        object_type: "contacts",
+        inputs: [{value: "a@b.com", properties: {firstname: "A"}}],
+        match_property: "email"
+      )
+    end
+
+    it "slices inputs into batches of BATCH_MAX_SIZE",
+       :aggregate_failures do
+      inputs = (1..150).map do |i|
+        {value: "user#{i}@example.com", properties: {firstname: "User#{i}"}}
       end
 
       call_count = 0
@@ -996,7 +1192,7 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         :post, upsert_url, anything
       ).twice do
         call_count += 1
-        email = "user#{call_count}@example.com"
+        email = "user#{(call_count - 1) * 100 + 1}@example.com"
         {
           status: 200,
           body: {
@@ -1008,14 +1204,16 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
       result = adapter.batch_upsert!(
         object_type: "contacts",
-        records: records,
-        id_property: "email"
+        inputs: inputs,
+        match_property: "email"
       )
-      expect(result).to be_a(Hash)
-      expect(result.size).to eq(2)
+      expect(result).to eq(
+        "user1@example.com" => "1",
+        "user101@example.com" => "2"
+      )
     end
 
-    it "stringifies symbol keys in records",
+    it "stringifies symbol keys in properties",
        :aggregate_failures do
       expect(http).to receive(:request).with(
         :post,
@@ -1037,9 +1235,37 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
 
       adapter.batch_upsert!(
         object_type: "contacts",
-        records: [{email: "a@b.com", firstname: "A"}],
-        id_property: "email"
+        inputs: [{value: "a@b.com", properties: {firstname: "A"}}],
+        match_property: "email"
       )
+    end
+
+    it "accepts string keys in inputs",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :post,
+        upsert_url,
+        headers: anything,
+        body: satisfy { |body|
+          input = JSON.parse(body)["inputs"].first
+          input["id"] == "a@b.com" &&
+            input["properties"] == {"firstname" => "A"}
+        }
+      ).and_return(
+        {
+          status: 200,
+          body: {
+            results: [{"id" => "1", "properties" => {"email" => "a@b.com"}}],
+          }.to_json,
+        }
+      )
+
+      result = adapter.batch_upsert!(
+        object_type: "contacts",
+        inputs: [{"value" => "a@b.com", "properties" => {"firstname" => "A"}}],
+        match_property: "email"
+      )
+      expect(result).to eq("a@b.com" => "1")
     end
 
     it "works with custom object types" do
@@ -1050,16 +1276,18 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       ).and_return(
         {
           status: 200,
-          body: {results: [{"id" => "42"}]}.to_json,
+          body: {
+            results: [{"id" => "42", "properties" => {"ref" => "ABC"}}],
+          }.to_json,
         }
       )
 
       result = adapter.batch_upsert!(
         object_type: "p12345_myobject",
-        records: [{"ref" => "ABC", "name" => "Test"}],
-        id_property: "ref"
+        inputs: [{value: "ABC", properties: {name: "Test"}}],
+        match_property: "ref"
       )
-      expect(result).to be_a(Hash)
+      expect(result).to eq("ABC" => "42")
     end
 
     it "raises ArgumentError on invalid arguments",
@@ -1067,34 +1295,53 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.batch_upsert!(
           object_type: "",
-          records: [{}],
-          id_property: "email"
+          inputs: [{value: "a@b.com", properties: {}}],
+          match_property: "email"
         )
       end.to raise_error(ArgumentError, /object_type/)
 
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: [{}],
-          id_property: nil
+          inputs: [{value: "a@b.com", properties: {}}],
+          match_property: nil
         )
-      end.to raise_error(ArgumentError, /id_property/)
+      end.to raise_error(ArgumentError, /match_property/)
 
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: "not array",
-          id_property: "email"
+          inputs: "not array",
+          match_property: "email"
         )
-      end.to raise_error(ArgumentError, /records/)
+      end.to raise_error(ArgumentError, /inputs/)
 
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: [],
-          id_property: "email"
+          inputs: [],
+          match_property: "email"
         )
-      end.to raise_error(ArgumentError, /records/)
+      end.to raise_error(ArgumentError, /inputs/)
+    end
+
+    it "raises ArgumentError when an input has a blank value",
+       :aggregate_failures do
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          inputs: [{value: "  ", properties: {firstname: "A"}}],
+          match_property: "email"
+        )
+      end.to raise_error(ArgumentError, /value/)
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          inputs: [{properties: {firstname: "A"}}],
+          match_property: "email"
+        )
+      end.to raise_error(ArgumentError, /value/)
     end
 
     it "raises Unauthorized on 401" do
@@ -1111,8 +1358,8 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: [{email: "a@b.com"}],
-          id_property: "email"
+          inputs: [{value: "a@b.com", properties: {firstname: "A"}}],
+          match_property: "email"
         )
       end.to raise_error(Etlify::Unauthorized, /Invalid token/)
     end
@@ -1131,8 +1378,8 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: [{email: "a@b.com"}],
-          id_property: "email"
+          inputs: [{value: "a@b.com", properties: {firstname: "A"}}],
+          match_property: "email"
         )
       end.to raise_error(Etlify::RateLimited, /Too many requests/)
     end
@@ -1145,8 +1392,8 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: [{email: "a@b.com"}],
-          id_property: "email"
+          inputs: [{value: "a@b.com", properties: {firstname: "A"}}],
+          match_property: "email"
         )
       end.to raise_error(Etlify::ApiError, /Server down/)
     end
@@ -1159,8 +1406,8 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: [{email: "a@b.com"}],
-          id_property: "email"
+          inputs: [{value: "a@b.com", properties: {firstname: "A"}}],
+          match_property: "email"
         )
       end.to raise_error(Etlify::TransportError, /connection reset/)
     end

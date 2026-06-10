@@ -13,9 +13,23 @@ module Etlify
     # - Transport-level issues raise TransportError.
     # - delete! returns false on 404 (object not found), raises otherwise.
     #
+    # Matching contract: the payload is synced as-is. `match_property` /
+    # `match_value` are only used to find the object (or to set the property
+    # at creation time when the payload does not include it). The matching
+    # property is NEVER written on an existing object unless the payload
+    # explicitly includes it. For contacts matched by email, this prevents
+    # overwriting the primary email when the platform email is one of the
+    # contact's secondary emails (hs_additional_emails).
+    #
     # Usage:
     #   adapter = Etlify::Adapters::HubspotV3Adapter.new(access_token: ENV["HUBSPOT_PRIVATE_APP_TOKEN"])
-    #   adapter.upsert!(object_type: "contacts", payload: {email: "john@example.com"}, id_property: :email, crm_id: nil)
+    #   adapter.upsert!(
+    #     object_type: "contacts",
+    #     payload: {firstname: "John"},
+    #     match_property: "email",
+    #     match_value: "john@example.com",
+    #     crm_id: nil
+    #   )
     #   adapter.delete!(object_type: "contacts", crm_id: "123") # => true, or false if 404
     class HubspotV3Adapter
       API_BASE = "https://api.hubapi.com"
@@ -30,45 +44,40 @@ module Etlify
         @http         = http_client || Etlify::Adapters::DefaultHttp.new
       end
 
-      # Upsert by searching on id_property (if provided), otherwise create directly.
+      # Upsert by crm_id when known, otherwise search on match_property /
+      # match_value, otherwise create.
       # @param object_type [String] HubSpot CRM object type (e.g., "contacts", "companies", "deals", or a custom object)
-      # @param payload [Hash] Properties for the object
-      # @param id_property [String, nil] Unique property used to search and upsert
-      # @param crm_id [Integer, String, nil] Record's HubSpot hs_object_id if known
-      #   (overrides id_property search if provided)
-      #   If both crm_id and id_property are nil, a new object is created.
-      #   If id_property is provided but not found, a new object is created.
-      # (e.g., "email" for contacts, "domain" for companies)
+      # @param payload [Hash] Properties for the object, synced as-is
+      # @param match_property [String, Symbol] Unique property used to search
+      #   (e.g., "email" for contacts, "domain" for companies)
+      # @param match_value [String] Value of match_property for this record
+      # @param crm_id [Integer, String, nil] Record's HubSpot hs_object_id if
+      #   known (skips the match_property search entirely)
       # @return [String, nil] HubSpot hs_object_id as string or nil if not available
-      def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
+      def upsert!(object_type:, payload:, match_property:, match_value:, crm_id: nil)
         raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
         raise ArgumentError, "payload must be a Hash" unless payload.is_a?(Hash)
+        raise ArgumentError, "match_property must be provided" if match_property.to_s.strip.empty?
 
-        properties   = payload.dup
-        unique_value = nil
+        prop = match_property.to_s
+        value = normalize_match_value(prop, match_value)
 
-        if crm_id.to_s.strip.empty?
-          if id_property
-            # Extract unique value whether id_property/payload keys are
-            # string or symbol. Normalize, then try both forms.
-            key_str = id_property.to_s
-            key_sym = key_str.to_sym
-            unique_value =
-              properties.delete(key_str) || properties.delete(key_sym)
+        object_id = if crm_id.to_s.strip.empty?
+          if value.empty?
+            raise ArgumentError,
+                  "match_value must be provided when crm_id is unknown"
           end
 
-          object_id = if id_property && unique_value
-            find_object_id_by_property(object_type, id_property, unique_value)
-          end
+          find_object_id_by_property(object_type, prop, value)
         else
-          object_id = crm_id.to_s.strip
+          crm_id.to_s.strip
         end
 
         if object_id
-          update_object(object_type, object_id, properties)
+          update_object(object_type, object_id, payload)
           object_id.to_s
         else
-          create_object(object_type, properties, id_property, unique_value)
+          create_object(object_type, payload, prop, value)
         end
       end
 
@@ -90,38 +99,61 @@ module Etlify
       end
 
       # Batch upsert via HubSpot's native /batch/upsert endpoint.
+      # The matching value travels in the input's `id`/`idProperty` slots,
+      # never in `properties`: HubSpot matches existing objects (including
+      # contacts' secondary emails) without rewriting the matching property,
+      # and sets it from `id` at creation time.
       # @param object_type [String] CRM object type
-      # @param records [Array<Hash>] Properties hashes (must include the id_property key)
-      # @param id_property [String] Unique property for matching (e.g., "email")
-      # @return [Hash{String => String}] mapping of id_property value to hs_object_id
-      def batch_upsert!(object_type:, records:, id_property:)
+      # @param inputs [Array<Hash>] each {value:, properties:} where value is
+      #   the match_property value and properties the payload, synced as-is
+      # @param match_property [String] Unique property for matching (e.g., "email")
+      # @return [Hash{String => String}] mapping of each input's value (as
+      #   provided) to hs_object_id, so callers can look results up with the
+      #   exact values they passed (HubSpot lowercases emails in responses)
+      def batch_upsert!(object_type:, inputs:, match_property:)
         raise ArgumentError, "object_type must be a String" if !object_type.is_a?(String) || object_type.empty?
-        raise ArgumentError, "id_property must be provided" if id_property.to_s.blank?
-        raise ArgumentError, "records must be a non-empty Array" if !records.is_a?(Array) || records.empty?
+        raise ArgumentError, "match_property must be provided" if match_property.to_s.blank?
+        raise ArgumentError, "inputs must be a non-empty Array" if !inputs.is_a?(Array) || inputs.empty?
 
         path = "/crm/v3/objects/#{object_type}/batch/upsert"
-        prop_key = id_property.to_s
+        prop = match_property.to_s
 
-        records.each_slice(BATCH_MAX_SIZE).each_with_object({}) do |slice, mapping|
+        inputs.each_slice(BATCH_MAX_SIZE).each_with_object({}) do |slice, mapping|
+          values = slice.map do |input|
+            raw = fetch_input(input, :value).to_s
+            value = normalize_match_value(prop, raw)
+            if value.empty?
+              raise ArgumentError,
+                    "every input must carry a non-blank :value"
+            end
+
+            [raw, value]
+          end
+
           body = {
-            inputs: slice.map do |record|
-              props = stringify_keys(record)
+            inputs: slice.each_with_index.map do |input, index|
               {
-                id: props[prop_key].to_s,
-                idProperty: prop_key,
-                properties: props,
+                id: values[index].last,
+                idProperty: prop,
+                properties: stringify_keys(fetch_input(input, :properties) || {}),
               }
             end,
           }
 
           resp = request(:post, path, body: body)
           raise_for_error!(resp, path: path)
-          mapping.merge!(extract_batch_mapping(resp, prop_key))
+
+          by_normalized_value = extract_batch_mapping(resp, prop)
+          values.each do |raw, value|
+            crm_id = by_normalized_value[value]
+            mapping[raw] = crm_id if crm_id
+          end
         end
       end
 
       # Batch update via HubSpot's native /batch/update endpoint, targeting
-      # each object by its known hs_object_id (crm_id) instead of id_property.
+      # each object by its known hs_object_id (crm_id) instead of
+      # match_property.
       # @param object_type [String] CRM object type
       # @param records [Array<Hash>] each {crm_id:, properties:}
       # @return [Hash{String => String}] identity mapping {crm_id => crm_id}
@@ -258,8 +290,7 @@ module Etlify
 
         # Normalize input for safer matching on HubSpot side
         prop = property.to_s
-        clean_value = value.to_s.strip
-        value = (prop == "email") ? clean_value.downcase : clean_value
+        value = normalize_match_value(prop, value)
 
         # Base exact match (works for native/custom objects)
         filter_groups = [
@@ -320,16 +351,17 @@ module Etlify
         true
       end
 
-      def create_object(object_type, properties, id_property, unique_value)
+      def create_object(object_type, properties, match_property, match_value)
         path  = "/crm/v3/objects/#{object_type}"
         props = stringify_keys(properties)
 
-        # If a unique property was provided and its value was extracted, ensure it is present on creation
-        if id_property && unique_value && !props.key?(id_property.to_s)
-          props[id_property.to_s] = unique_value
+        # The matching property is only written at creation time, and only
+        # when the payload does not already carry it (payload wins).
+        if !match_value.empty? && !props.key?(match_property)
+          props[match_property] = match_value
         end
 
-        props["email"] = props["email"].downcase if props.key?("email")
+        props["email"] = props["email"].downcase if props["email"].is_a?(String)
 
         resp = request(:post, path, body: {properties: props})
         if resp[:status].between?(200, 299) && resp[:json].is_a?(Hash) && resp[:json]["id"]
@@ -339,16 +371,26 @@ module Etlify
         raise_for_error!(resp, path: path)
       end
 
-      def extract_batch_mapping(resp, id_property)
+      # Map each upserted object back to its match value. Values are
+      # normalized on both sides (HubSpot lowercases emails in responses)
+      # so callers can look results up with their own normalized value.
+      def extract_batch_mapping(resp, match_property)
         results = resp[:json].is_a?(Hash) ? resp[:json]["results"] : nil
         return {} unless results.is_a?(Array)
 
         results.each_with_object({}) do |r, h|
           crm_id = r["id"].to_s
           props = r["properties"] || {}
-          id_value = props[id_property].to_s
-          h[id_value] = crm_id unless id_value.empty?
+          match_value = normalize_match_value(match_property, props[match_property])
+          h[match_value] = crm_id unless match_value.empty?
         end
+      end
+
+      # Strip the value; emails are also lowercased to match HubSpot's
+      # canonical form (responses and search are case-insensitive).
+      def normalize_match_value(match_property, value)
+        clean = value.to_s.strip
+        (match_property == "email") ? clean.downcase : clean
       end
 
       def stringify_keys(hash)
@@ -357,6 +399,10 @@ module Etlify
 
       def fetch_crm_id(record)
         (record[:crm_id] || record["crm_id"]).to_s
+      end
+
+      def fetch_input(input, key)
+        input[key] || input[key.to_s]
       end
     end
   end

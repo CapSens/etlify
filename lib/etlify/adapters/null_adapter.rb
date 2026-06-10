@@ -2,20 +2,23 @@ module Etlify
   module Adapters
     # Adapter no-op pour dev/test
     class NullAdapter
-      def upsert!(payload:, object_type:, id_property:, crm_id: nil)
+      def upsert!(payload:, object_type:, match_property:, match_value:, crm_id: nil)
         return crm_id.to_s unless crm_id.to_s.strip.empty?
 
-        payload.fetch(id_property, SecureRandom.uuid).to_s
+        value = match_value.to_s.strip
+        value.empty? ? SecureRandom.uuid : value
       end
 
       def delete!(crm_id:, object_type:)
         true
       end
 
-      def batch_upsert!(records:, object_type:, id_property:)
-        prop = id_property.to_s
-        records.each_with_object({}) do |r, h|
-          key = (r[prop] || r[prop.to_sym] || SecureRandom.uuid).to_s
+      # Mirrors the real adapters' contract: inputs are {value:, properties:}
+      # and the returned mapping is keyed by each input's match value.
+      def batch_upsert!(inputs:, object_type:, match_property:)
+        inputs.each_with_object({}) do |input, h|
+          value = (input[:value] || input["value"]).to_s.strip
+          key = value.empty? ? SecureRandom.uuid : value
           h[key] = SecureRandom.uuid
         end
       end

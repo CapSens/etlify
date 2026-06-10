@@ -46,8 +46,8 @@ module Etlify
 
       if ready.any?
         sync_results = perform_batch_upsert!(ready)
-        stats[:synced] = sync_results[:synced]
-        stats[:errors] = sync_results[:errors]
+        stats[:synced] += sync_results[:synced]
+        stats[:errors] += sync_results[:errors]
       end
 
       stats
@@ -90,18 +90,36 @@ module Etlify
         return [:not_modified, nil]
       end
 
+      # Resolve the matching value. A blank value is only acceptable when
+      # the record already has a crm_id (update by id, no matching needed):
+      # without one, the record can neither be reconciled nor created with
+      # its unique property, so fail it explicitly instead of guessing.
+      # A raising match_by proc is isolated the same way so one bad record
+      # never blocks the whole batch.
+      begin
+        match_value = Etlify::MatchBy.resolve(record, @conf)
+        if match_value.empty? && sync_line.crm_id.blank?
+          raise ArgumentError,
+                "match_by value resolved blank and no crm_id is known"
+        end
+      rescue => e
+        bump_error!({sync_line: sync_line}, e)
+        return [:errors, nil]
+      end
+
       item = {
         record: record,
         payload: payload,
         digest: digest,
         sync_line: sync_line,
+        match_value: match_value,
       }
       [:ready, item]
     end
 
     # Split ready records by whether they already have a crm_id:
     #   - with crm_id    -> update directly by crm_id (batch_update!)
-    #   - without crm_id -> reconcile/create via id_property (batch_upsert!)
+    #   - without crm_id -> reconcile/create via match_by (batch_upsert!)
     # Each group is processed and recovered independently so a failure in one
     # never re-processes the other.
     def perform_batch_upsert!(ready_items)
@@ -115,7 +133,9 @@ module Etlify
     end
 
     # Records that already have a crm_id are updated by crm_id, so a changed
-    # id_property (e.g. email) can no longer trigger a duplicate/collision.
+    # matching value (e.g. email) can no longer trigger a duplicate/collision.
+    # The payload is sent as-is: the matching property is never written
+    # unless the serializer explicitly includes it.
     def update_existing_batch!(items)
       records = items.map do |item|
         {crm_id: item[:sync_line].crm_id, properties: item[:payload]}
@@ -136,21 +156,22 @@ module Etlify
       fallback_to_sequential_upsert!(items)
     end
 
-    # First-time sync (no crm_id yet): reconcile through id_property using the
+    # First-time sync (no crm_id yet): reconcile through match_by using the
     # CRM's native batch upsert endpoint, then fall back to sequential upserts
     # to isolate the offending record on a deterministic per-record error.
     def upsert_new_batch!(items)
-      id_prop = @conf[:id_property].to_s
-      payloads = items.map { |item| item[:payload] }
+      inputs = items.map do |item|
+        {value: item[:match_value], properties: item[:payload]}
+      end
 
       crm_id_mapping = @adapter.batch_upsert!(
         object_type: @conf[:crm_object_type],
-        records: payloads,
-        id_property: id_prop
+        inputs: inputs,
+        match_property: Etlify::MatchBy.property(@conf)
       )
 
       apply_batch_results!(items) do |item|
-        crm_id_mapping[extract_id_value(item[:payload], id_prop)]
+        crm_id_mapping[item[:match_value]]
       end
     rescue Etlify::RateLimited
       raise
@@ -174,7 +195,8 @@ module Etlify
       items.each do |item|
         crm_id = @adapter.upsert!(
           payload: item[:payload],
-          id_property: @conf[:id_property],
+          match_property: Etlify::MatchBy.property(@conf),
+          match_value: item[:match_value],
           object_type: @conf[:crm_object_type],
           crm_id: item[:sync_line].crm_id
         )
@@ -183,7 +205,7 @@ module Etlify
         synced += 1
       rescue Etlify::RateLimited
         raise
-      rescue StandardError => e
+      rescue => e
         errors += 1
         bump_error!(item, e)
       end
@@ -203,7 +225,7 @@ module Etlify
         synced += 1
       rescue Etlify::RateLimited
         raise
-      rescue StandardError => e
+      rescue => e
         errors += 1
         bump_error!(item, e)
       end
@@ -229,7 +251,7 @@ module Etlify
         last_error: error.message,
         error_count: item[:sync_line].error_count.to_i + 1
       )
-    rescue StandardError
+    rescue
       # no-op
     end
 
@@ -249,10 +271,6 @@ module Etlify
 
       status = error.status.to_i
       (400..499).cover?(status) && ![401, 403, 429].include?(status)
-    end
-
-    def extract_id_value(payload, id_prop)
-      (payload[id_prop] || payload[id_prop.to_sym] || "").to_s
     end
 
     # --- Dependency helpers ---

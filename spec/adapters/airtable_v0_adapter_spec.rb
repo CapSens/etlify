@@ -30,7 +30,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   end
 
   describe "#upsert!" do
-    context "when record exists (search by id_property)" do
+    context "when record exists (search by match_property)" do
       it "PATCHes the record and returns its id",
          :aggregate_failures do
         # 1) Search via filterByFormula
@@ -69,9 +69,45 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         id = adapter.upsert!(
           object_type: table,
           payload: {Email: "john@example.com", Name: "John"},
-          id_property: "Email"
+          match_property: "Email",
+          match_value: "john@example.com"
         )
         expect(id).to eq("recABC123")
+      end
+
+      it "PATCHes the payload as-is without injecting the matching field",
+         :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :get, /filterByFormula/, anything
+        ).and_return(
+          {
+            status: 200,
+            body: {
+              records: [{"id" => "recNOINJ", "fields" => {}}],
+            }.to_json,
+          }
+        )
+
+        expect(http).to receive(:request).with(
+          :patch,
+          "https://api.airtable.com/v0/#{base_id}/#{table}/recNOINJ",
+          headers: hash_including(
+            "Authorization" => "Bearer #{token}"
+          ),
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            json["fields"] == {"Name" => "John"} &&
+              !json["fields"].key?("Email")
+          end
+        ).and_return({status: 200, body: "{}"})
+
+        id = adapter.upsert!(
+          object_type: table,
+          payload: {Name: "John"},
+          match_property: "Email",
+          match_value: "john@example.com"
+        )
+        expect(id).to eq("recNOINJ")
       end
     end
 
@@ -98,7 +134,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         id = adapter.upsert!(
           object_type: table,
           payload: {Email: "john@example.com", Name: "John"},
-          id_property: "Email",
+          match_property: "Email",
+          match_value: nil,
           crm_id: "recDIRECT"
         )
         expect(id).to eq("recDIRECT")
@@ -115,7 +152,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           {status: 200, body: {records: []}.to_json}
         )
 
-        # 2) Create
+        # 2) Create: payload already carries the match field, sent as-is
         expect(http).to receive(:request).with(
           :post,
           "https://api.airtable.com/v0/#{base_id}/#{table}",
@@ -136,17 +173,18 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         id = adapter.upsert!(
           object_type: table,
           payload: {Email: "new@example.com", Name: "New"},
-          id_property: "Email"
+          match_property: "Email",
+          match_value: "new@example.com"
         )
         expect(id).to eq("recNEW001")
       end
-    end
 
-    context "when no id_property is provided" do
-      it "creates directly without searching",
+      it "injects the matching field when absent from payload",
          :aggregate_failures do
-        expect(http).not_to receive(:request).with(
-          :get, anything, anything
+        expect(http).to receive(:request).with(
+          :get, /filterByFormula/, anything
+        ).and_return(
+          {status: 200, body: {records: []}.to_json}
         )
 
         expect(http).to receive(:request).with(
@@ -157,17 +195,81 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           ),
           body: satisfy do |body|
             json = JSON.parse(body)
-            json["fields"] == {"Name" => "Direct"}
+            json["fields"] == {
+              "Name" => "New",
+              "Email" => "new@example.com",
+            }
           end
         ).and_return(
-          {status: 200, body: {id: "recDIR001"}.to_json}
+          {status: 200, body: {id: "recINJ001"}.to_json}
         )
 
         id = adapter.upsert!(
           object_type: table,
-          payload: {Name: "Direct"}
+          payload: {Name: "New"},
+          match_property: "Email",
+          match_value: "new@example.com"
         )
-        expect(id).to eq("recDIR001")
+        expect(id).to eq("recINJ001")
+      end
+
+      it "keeps the payload value when it already carries the match field",
+         :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :get, /filterByFormula/, anything
+        ).and_return(
+          {status: 200, body: {records: []}.to_json}
+        )
+
+        expect(http).to receive(:request).with(
+          :post,
+          "https://api.airtable.com/v0/#{base_id}/#{table}",
+          headers: hash_including(
+            "Authorization" => "Bearer #{token}"
+          ),
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            json["fields"] == {
+              "Email" => "payload@example.com",
+              "Name" => "P",
+            }
+          end
+        ).and_return(
+          {status: 200, body: {id: "recWIN001"}.to_json}
+        )
+
+        id = adapter.upsert!(
+          object_type: table,
+          payload: {Email: "payload@example.com", Name: "P"},
+          match_property: "Email",
+          match_value: "param@example.com"
+        )
+        expect(id).to eq("recWIN001")
+      end
+    end
+
+    context "when match_value is blank and crm_id is unknown" do
+      it "raises ArgumentError without any HTTP call",
+         :aggregate_failures do
+        expect(http).not_to receive(:request)
+
+        expect do
+          adapter.upsert!(
+            object_type: table,
+            payload: {Name: "X"},
+            match_property: "Email",
+            match_value: nil
+          )
+        end.to raise_error(ArgumentError, /match_value/)
+
+        expect do
+          adapter.upsert!(
+            object_type: table,
+            payload: {Name: "X"},
+            match_property: "Email",
+            match_value: "   "
+          )
+        end.to raise_error(ArgumentError, /match_value/)
       end
     end
 
@@ -199,21 +301,48 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       id = adapter.upsert!(
         object_type: table,
         payload: {"Email" => "a@b.com", :Name => "A"},
-        id_property: "Email"
+        match_property: "Email",
+        match_value: "a@b.com"
       )
       expect(id).to eq("recMIX001")
     end
 
     it "raises on invalid arguments", :aggregate_failures do
       expect do
-        adapter.upsert!(object_type: "", payload: {})
-      end.to raise_error(ArgumentError)
+        adapter.upsert!(
+          object_type: "",
+          payload: {},
+          match_property: "Email",
+          match_value: "a@b.com"
+        )
+      end.to raise_error(ArgumentError, /object_type/)
 
       expect do
         adapter.upsert!(
-          object_type: table, payload: "not a hash"
+          object_type: table,
+          payload: "not a hash",
+          match_property: "Email",
+          match_value: "a@b.com"
         )
-      end.to raise_error(ArgumentError)
+      end.to raise_error(ArgumentError, /payload/)
+
+      expect do
+        adapter.upsert!(
+          object_type: table,
+          payload: {},
+          match_property: "",
+          match_value: "a@b.com"
+        )
+      end.to raise_error(ArgumentError, /match_property/)
+
+      expect do
+        adapter.upsert!(
+          object_type: table,
+          payload: {},
+          match_property: nil,
+          match_value: "a@b.com"
+        )
+      end.to raise_error(ArgumentError, /match_property/)
     end
 
     it "escapes double quotes in formula values" do
@@ -237,16 +366,17 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       adapter.upsert!(
         object_type: table,
         payload: {Name: 'value with "quotes"'},
-        id_property: "Name"
+        match_property: "Name",
+        match_value: 'value with "quotes"'
       )
     end
 
-    it "uses numeric value without quotes in formula" do
+    it "stringifies numeric match_value (quoted in formula)" do
       expect(http).to receive(:request).with(
         :get,
         satisfy do |url|
           decoded = URI.decode_www_form_component(url)
-          decoded.include?("{Score} = 42")
+          decoded.include?('{Score} = "42"')
         end,
         anything
       ).and_return(
@@ -262,7 +392,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       adapter.upsert!(
         object_type: table,
         payload: {Score: 42, Name: "Test"},
-        id_property: "Score"
+        match_property: "Score",
+        match_value: 42
       )
     end
 
@@ -284,7 +415,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         id = adapter.upsert!(
           object_type: table,
           payload: {Email: "j@e.com", Name: "J"},
-          id_property: "Email"
+          match_property: "Email",
+          match_value: "j@e.com"
         )
         expect(id).to eq("rec404C")
       end
@@ -310,7 +442,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           adapter.upsert!(
             object_type: table,
             payload: {Email: "x@y.com"},
-            id_property: "Email"
+            match_property: "Email",
+            match_value: "x@y.com"
           )
         end.to raise_error(
           Etlify::Unauthorized, /Invalid token.*status=401/
@@ -349,7 +482,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           adapter.upsert!(
             object_type: table,
             payload: {Email: "john@example.com"},
-            id_property: "Email"
+            match_property: "Email",
+            match_value: "john@example.com"
           )
         end.to raise_error(
           Etlify::ValidationFailed, /Invalid fields/
@@ -383,7 +517,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           adapter.upsert!(
             object_type: table,
             payload: {Email: "a@b.com"},
-            id_property: "Email"
+            match_property: "Email",
+            match_value: "a@b.com"
           )
         end.to raise_error(
           Etlify::RateLimited, /Too many requests/
@@ -411,7 +546,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           adapter.upsert!(
             object_type: table,
             payload: {Email: "x@y.com"},
-            id_property: "Email"
+            match_property: "Email",
+            match_value: "x@y.com"
           )
         end.to raise_error(
           Etlify::ApiError, /Internal error.*status=500/
@@ -431,7 +567,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           adapter.upsert!(
             object_type: table,
             payload: {Email: "x@y.com"},
-            id_property: "Email"
+            match_property: "Email",
+            match_value: "x@y.com"
           )
         end.to raise_error(
           Etlify::ApiError,
@@ -450,7 +587,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           adapter.upsert!(
             object_type: table,
             payload: {Email: "x@y.com"},
-            id_property: "Email"
+            match_property: "Email",
+            match_value: "x@y.com"
           )
         end.to raise_error(
           Etlify::TransportError, /tcp reset/
@@ -479,7 +617,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         adapter.upsert!(
           object_type: table,
           payload: {Email: "x@y.com", Name: "X"},
-          id_property: "Email"
+          match_property: "Email",
+          match_value: "x@y.com"
         )
       end.to raise_error(
         Etlify::TransportError, /network down/
@@ -611,9 +750,9 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
     context "with a single batch (<= 10 records)" do
       it "sends one PATCH with performUpsert and returns records",
          :aggregate_failures do
-        records = [
-          {Email: "a@b.com", Name: "A"},
-          {Email: "c@d.com", Name: "C"},
+        inputs = [
+          {value: "a@b.com", properties: {Name: "A"}},
+          {value: "c@d.com", properties: {Name: "C"}},
         ]
 
         expect(http).to receive(:request).with(
@@ -626,8 +765,14 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
             json = JSON.parse(body)
             json["performUpsert"]["fieldsToMergeOn"] == ["Email"] &&
               json["records"].size == 2 &&
-              json["records"][0]["fields"]["Email"] == "a@b.com" &&
-              json["records"][1]["fields"]["Email"] == "c@d.com"
+              json["records"][0]["fields"] == {
+                "Name" => "A",
+                "Email" => "a@b.com",
+              } &&
+              json["records"][1]["fields"] == {
+                "Name" => "C",
+                "Email" => "c@d.com",
+              }
           end
         ).and_return(
           {
@@ -651,8 +796,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
 
         result = adapter.batch_upsert!(
           object_type: table,
-          records: records,
-          id_property: "Email"
+          inputs: inputs,
+          match_property: "Email"
         )
         expect(result).to eq(
           "a@b.com" => "recA",
@@ -661,10 +806,95 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       end
     end
 
+    context "when properties already carry the merge field" do
+      it "does not overwrite the payload value with the input value",
+         :aggregate_failures do
+        inputs = [
+          {
+            value: "param@x.com",
+            properties: {Email: "payload@x.com", Name: "P"},
+          },
+        ]
+
+        expect(http).to receive(:request).with(
+          :patch,
+          anything,
+          headers: anything,
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            json["records"][0]["fields"] == {
+              "Email" => "payload@x.com",
+              "Name" => "P",
+            }
+          end
+        ).and_return(
+          {
+            status: 200,
+            body: {
+              records: [
+                {
+                  "id" => "recP",
+                  "fields" => {"Email" => "payload@x.com"},
+                },
+              ],
+            }.to_json,
+          }
+        )
+
+        result = adapter.batch_upsert!(
+          object_type: table,
+          inputs: inputs,
+          match_property: "Email"
+        )
+
+        # The response carries the payload value, not the input value,
+        # so the input value cannot be matched back in the mapping.
+        expect(result).to eq({})
+      end
+    end
+
+    it "returns a mapping keyed by the input values as provided",
+       :aggregate_failures do
+      inputs = [{value: "  a@b.com  ", properties: {Name: "A"}}]
+
+      expect(http).to receive(:request).with(
+        :patch,
+        anything,
+        headers: anything,
+        body: satisfy do |body|
+          json = JSON.parse(body)
+          json["records"][0]["fields"] == {
+            "Name" => "A",
+            "Email" => "a@b.com",
+          }
+        end
+      ).and_return(
+        {
+          status: 200,
+          body: {
+            records: [
+              {
+                "id" => "recA",
+                "fields" => {"Email" => " a@b.com "},
+              },
+            ],
+          }.to_json,
+        }
+      )
+
+      result = adapter.batch_upsert!(
+        object_type: table,
+        inputs: inputs,
+        match_property: "Email"
+      )
+
+      expect(result).to eq("  a@b.com  " => "recA")
+    end
+
     context "with multiple batches (> 10 records)" do
       it "splits into slices of 10", :aggregate_failures do
-        records = (1..12).map do |i|
-          {Email: "u#{i}@test.com", Name: "U#{i}"}
+        inputs = (1..12).map do |i|
+          {value: "u#{i}@test.com", properties: {Name: "U#{i}"}}
         end
 
         # First batch: 10 records
@@ -711,17 +941,17 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
 
         result = adapter.batch_upsert!(
           object_type: table,
-          records: records,
-          id_property: "Email"
+          inputs: inputs,
+          match_property: "Email"
         )
         expect(result).to be_a(Hash)
         expect(result.size).to eq(12)
       end
     end
 
-    context "when id_property is a field NAME" do
+    context "when match_property is a field NAME" do
       it "does NOT request returnFieldsByFieldId, response keys are names" do
-        records = [{Email: "a@b.com", Name: "A"}]
+        inputs = [{value: "a@b.com", properties: {Name: "A"}}]
 
         expect(http).to receive(:request).with(
           :patch,
@@ -747,15 +977,15 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
 
         result = adapter.batch_upsert!(
           object_type: table,
-          records: records,
-          id_property: "Email"
+          inputs: inputs,
+          match_property: "Email"
         )
 
         expect(result).to eq("a@b.com" => "recA")
       end
     end
 
-    context "when id_property is a field ID" do
+    context "when match_property is a field ID" do
       it "requests returnFieldsByFieldId so the response is keyed by field ID" do
         # Without returnFieldsByFieldId, Airtable returns fields keyed by name
         # (e.g. "🟣 Mail 1") even when the request uses field IDs. Then
@@ -763,7 +993,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         # mapping is silently empty, causing BatchSynchronizer to write
         # crm_id: nil with last_digest set, leaving the row stuck forever.
         email_field_id = "fld0aeED3e0g1qqsx"
-        records = [{email_field_id => "a@b.com"}]
+        inputs = [{value: "a@b.com", properties: {}}]
 
         expect(http).to receive(:request).with(
           :patch,
@@ -772,7 +1002,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           body: satisfy do |body|
             json = JSON.parse(body)
             json["returnFieldsByFieldId"] == true &&
-              json["performUpsert"]["fieldsToMergeOn"] == [email_field_id]
+              json["performUpsert"]["fieldsToMergeOn"] == [email_field_id] &&
+              json["records"][0]["fields"] == {email_field_id => "a@b.com"}
           end
         ).and_return(
           {
@@ -790,18 +1021,20 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
 
         result = adapter.batch_upsert!(
           object_type: table,
-          records: records,
-          id_property: email_field_id
+          inputs: inputs,
+          match_property: email_field_id
         )
 
         expect(result).to eq("a@b.com" => "recA")
       end
     end
 
-    context "with multiple batches and field ID id_property" do
+    context "with multiple batches and field ID match_property" do
       it "sends returnFieldsByFieldId on every slice", :aggregate_failures do
         email_field_id = "fld0aeED3e0g1qqsx"
-        records = (1..12).map { |i| {email_field_id => "u#{i}@test.com"} }
+        inputs = (1..12).map do |i|
+          {value: "u#{i}@test.com", properties: {}}
+        end
 
         # First batch: 10 records
         expect(http).to receive(:request).with(
@@ -853,8 +1086,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
 
         result = adapter.batch_upsert!(
           object_type: table,
-          records: records,
-          id_property: email_field_id
+          inputs: inputs,
+          match_property: email_field_id
         )
 
         expect(result.size).to eq(12)
@@ -866,21 +1099,46 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
     it "raises on invalid arguments", :aggregate_failures do
       expect do
         adapter.batch_upsert!(
-          object_type: "", records: [{}], id_property: "Email"
+          object_type: "",
+          inputs: [{value: "a@b.com", properties: {}}],
+          match_property: "Email"
         )
       end.to raise_error(ArgumentError, /object_type/)
 
       expect do
         adapter.batch_upsert!(
-          object_type: table, records: [], id_property: "Email"
+          object_type: table, inputs: [], match_property: "Email"
         )
-      end.to raise_error(ArgumentError, /records/)
+      end.to raise_error(ArgumentError, /inputs/)
 
       expect do
         adapter.batch_upsert!(
-          object_type: table, records: [{}], id_property: ""
+          object_type: table,
+          inputs: [{value: "a@b.com", properties: {}}],
+          match_property: ""
         )
-      end.to raise_error(ArgumentError, /id_property/)
+      end.to raise_error(ArgumentError, /match_property/)
+    end
+
+    it "raises when an input carries a blank value",
+       :aggregate_failures do
+      expect(http).not_to receive(:request)
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: table,
+          inputs: [{value: "   ", properties: {Name: "A"}}],
+          match_property: "Email"
+        )
+      end.to raise_error(ArgumentError, /value/)
+
+      expect do
+        adapter.batch_upsert!(
+          object_type: table,
+          inputs: [{value: nil, properties: {Name: "A"}}],
+          match_property: "Email"
+        )
+      end.to raise_error(ArgumentError, /value/)
     end
 
     it "raises RateLimited on 429" do
@@ -901,8 +1159,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       expect do
         adapter.batch_upsert!(
           object_type: table,
-          records: [{Email: "a@b.com"}],
-          id_property: "Email"
+          inputs: [{value: "a@b.com", properties: {Name: "A"}}],
+          match_property: "Email"
         )
       end.to raise_error(
         Etlify::RateLimited, /Too many requests/
@@ -927,8 +1185,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       expect do
         adapter.batch_upsert!(
           object_type: table,
-          records: [{Email: "a@b.com"}],
-          id_property: "Email"
+          inputs: [{value: "a@b.com", properties: {Name: "A"}}],
+          match_property: "Email"
         )
       end.to raise_error(
         Etlify::ValidationFailed, /Invalid fields/
@@ -1151,7 +1409,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
 
   describe "edge cases" do
     context "when crm_id is whitespace-only" do
-      it "treats as absent and searches by id_property",
+      it "treats as absent and searches by match_property",
          :aggregate_failures do
         expect(http).to receive(:request).with(
           :get, /filterByFormula/, anything
@@ -1168,37 +1426,22 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         id = adapter.upsert!(
           object_type: table,
           payload: {Email: "a@b.com"},
-          id_property: "Email",
+          match_property: "Email",
+          match_value: "a@b.com",
           crm_id: "   "
         )
         expect(id).to eq("recWS")
       end
     end
 
-    context "when id_property is provided but absent from payload" do
-      it "creates directly without searching",
-         :aggregate_failures do
-        expect(http).not_to receive(:request).with(
-          :get, anything, anything
-        )
-
-        expect(http).to receive(:request).with(
-          :post, anything, anything
-        ).and_return(
-          {status: 200, body: {id: "recNOKEY"}.to_json}
-        )
-
-        id = adapter.upsert!(
-          object_type: table,
-          payload: {Name: "Test"},
-          id_property: "Email"
-        )
-        expect(id).to eq("recNOKEY")
-      end
-    end
-
     context "when create returns 2xx but no id in response" do
       it "raises ApiError", :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :get, /filterByFormula/, anything
+        ).and_return(
+          {status: 200, body: {records: []}.to_json}
+        )
+
         expect(http).to receive(:request).with(
           :post, anything, anything
         ).and_return(
@@ -1208,7 +1451,9 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         expect do
           adapter.upsert!(
             object_type: table,
-            payload: {Name: "NoId"}
+            payload: {Name: "NoId"},
+            match_property: "Name",
+            match_value: "NoId"
           )
         end.to raise_error(Etlify::ApiError)
       end
@@ -1230,7 +1475,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           adapter.upsert!(
             object_type: table,
             payload: {Email: "a@b.com", Name: "A"},
-            id_property: "Email"
+            match_property: "Email",
+            match_value: "a@b.com"
           )
         end.to raise_error(
           Etlify::TransportError, /connection reset/
@@ -1258,7 +1504,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           adapter.upsert!(
             object_type: table,
             payload: {Email: "x@y.com"},
-            id_property: "Email"
+            match_property: "Email",
+            match_value: "x@y.com"
           )
         end.to raise_error(Etlify::Unauthorized, /Access denied/)
       end
@@ -1299,8 +1546,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
 
         result = adapter.batch_upsert!(
           object_type: table,
-          records: [{Email: "a@b.com"}],
-          id_property: "Email"
+          inputs: [{value: "a@b.com", properties: {Name: "A"}}],
+          match_property: "Email"
         )
         expect(result).to eq({})
       end
@@ -1329,8 +1576,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         expect do
           adapter.batch_upsert!(
             object_type: table,
-            records: [{Email: "a@b.com"}],
-            id_property: "Email"
+            inputs: [{value: "a@b.com", properties: {Name: "A"}}],
+            match_property: "Email"
           )
         end.to raise_error(
           Etlify::TransportError, /batch timeout/
@@ -1367,7 +1614,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
           adapter.upsert!(
             object_type: table,
             payload: {Email: "x@y.com"},
-            id_property: "Email"
+            match_property: "Email",
+            match_value: "x@y.com"
           )
         end.to raise_error(
           Etlify::ValidationFailed, /Record conflict/
@@ -1397,14 +1645,15 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   describe "URL encoding of path segments" do
     it "URL-encodes object_type with spaces" do
       expect(http).to receive(:request).with(
-        :post, /My%20Contacts/, anything
-      ).and_return(
-        {status: 200, body: {id: "recSPC"}.to_json}
-      )
+        :patch, %r{My%20Contacts/recSPC}, anything
+      ).and_return({status: 200, body: "{}"})
 
       id = adapter.upsert!(
         object_type: "My Contacts",
-        payload: {Name: "Test"}
+        payload: {Name: "Test"},
+        match_property: "Name",
+        match_value: "Test",
+        crm_id: "recSPC"
       )
       expect(id).to eq("recSPC")
     end
@@ -1423,7 +1672,7 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
   end
 
   describe "batch edge cases" do
-    it "batch_upsert! accepts id_property as Symbol",
+    it "batch_upsert! accepts match_property as Symbol",
        :aggregate_failures do
       expect(http).to receive(:request).with(
         :patch,
@@ -1444,16 +1693,16 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
 
       result = adapter.batch_upsert!(
         object_type: table,
-        records: [{Email: "a@b.com"}],
-        id_property: :Email
+        inputs: [{value: "a@b.com", properties: {Name: "A"}}],
+        match_property: :Email
       )
       expect(result).to eq("a@b.com" => "recSYM")
     end
 
     it "batch raises on 2nd slice after 1st succeeds",
        :aggregate_failures do
-      records = (1..12).map do |i|
-        {Email: "u#{i}@test.com"}
+      inputs = (1..12).map do |i|
+        {value: "u#{i}@test.com", properties: {Name: "U#{i}"}}
       end
 
       # 1st slice succeeds
@@ -1492,8 +1741,8 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
       expect do
         adapter.batch_upsert!(
           object_type: table,
-          records: records,
-          id_property: "Email"
+          inputs: inputs,
+          match_property: "Email"
         )
       end.to raise_error(Etlify::RateLimited)
     end

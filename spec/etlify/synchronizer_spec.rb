@@ -1,7 +1,7 @@
 require "rails_helper"
 
 class FailingAdapter
-  def upsert!(payload:, id_property:, object_type:, crm_id: nil)
+  def upsert!(payload:, match_property:, match_value:, object_type:, crm_id: nil)
     raise "boom"
   end
 end
@@ -65,7 +65,8 @@ RSpec.describe Etlify::Synchronizer do
 
   context "argument passing to adapter" do
     # We assert that Synchronizer passes the correct keywords to adapter.upsert!
-    it "passes payload, id_property and object_type", :aggregate_failures do
+    it "passes payload, match_property, match_value and object_type",
+       :aggregate_failures do
       adapter_instance = instance_double(Etlify::Adapters::NullAdapter)
 
       # Ensure the adapter instance used is our spy
@@ -78,7 +79,8 @@ RSpec.describe Etlify::Synchronizer do
 
       expect(adapter_instance).to receive(:upsert!).with(
         payload: expected_payload,
-        id_property: "id",
+        match_property: "id",
+        match_value: user.id.to_s,
         object_type: "contacts",
         crm_id: nil
       ).and_return("crm-xyz")
@@ -112,6 +114,57 @@ RSpec.describe Etlify::Synchronizer do
 
       expect(described_class.call(user, crm_name: :hubspot)).to eq(:synced)
       expect(received[:crm_id]).to eq("existing-123")
+    end
+  end
+
+  context "match_by resolution" do
+    it "records :error when the match_by value proc raises",
+       :aggregate_failures do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {
+              property: :email,
+              value: ->(_record) { raise "broken resolver" },
+            },
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      result = described_class.call(user, crm_name: :hubspot)
+      line = sync_lines_for(user).find_by(crm_name: "hubspot")
+
+      expect(result).to eq(:error)
+      expect(line.last_error).to eq("broken resolver")
+      expect(line.error_count).to eq(1)
+    end
+
+    it "still updates by crm_id when the resolved value is blank",
+       :aggregate_failures do
+      CrmSynchronisation.create!(
+        resource: user,
+        crm_name: "hubspot",
+        crm_id: "existing-123",
+        last_digest: "stale-digest"
+      )
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :email, value: ->(_record) {}},
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      result = described_class.call(user, crm_name: :hubspot)
+      line = sync_lines_for(user).find_by(crm_name: "hubspot")
+
+      expect(result).to eq(:synced)
+      expect(line.crm_id).to eq("existing-123")
     end
   end
 
@@ -168,7 +221,7 @@ RSpec.describe Etlify::Synchronizer do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
             sync_dependencies: [:company],
           },
@@ -202,7 +255,7 @@ RSpec.describe Etlify::Synchronizer do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
             sync_dependencies: [:company],
           },
@@ -226,7 +279,7 @@ RSpec.describe Etlify::Synchronizer do
             {
               crm => {
                 adapter: Etlify::Adapters::NullAdapter.new,
-                id_property: "id",
+                match_by: {property: :id, value: :id},
                 crm_object_type: "contacts",
                 sync_dependencies: [:company],
               },
@@ -244,7 +297,7 @@ RSpec.describe Etlify::Synchronizer do
             {
               crm => {
                 adapter: Etlify::Adapters::NullAdapter.new,
-                id_property: "id",
+                match_by: {property: :id, value: :id},
                 crm_object_type: "contacts",
                 sync_dependencies: [:company],
               },
@@ -274,7 +327,7 @@ RSpec.describe Etlify::Synchronizer do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "companies",
             sync_dependencies: [],
           },
@@ -302,7 +355,7 @@ RSpec.describe Etlify::Synchronizer do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "companies",
             sync_dependencies: [],
           },
@@ -355,7 +408,7 @@ RSpec.describe Etlify::Synchronizer do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
             sync_dependencies: [:company],
           },
@@ -381,7 +434,7 @@ RSpec.describe Etlify::Synchronizer do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
             sync_dependencies: [:company],
           },
@@ -407,7 +460,7 @@ RSpec.describe Etlify::Synchronizer do
       {
         hubspot: {
           adapter: FailingAdapter.new,
-          id_property: "id",
+          match_by: {property: :id, value: :id},
           crm_object_type: "contacts",
         },
       }
@@ -465,7 +518,7 @@ RSpec.describe Etlify::Synchronizer do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
             guard: ->(_r) { false },
           },

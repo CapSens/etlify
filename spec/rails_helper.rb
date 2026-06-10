@@ -130,7 +130,7 @@ RSpec.configure do |config|
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
           },
         }

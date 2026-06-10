@@ -1,3 +1,115 @@
+# UPGRADING FROM 0.11.3 -> UNRELEASED
+
+## 1. Overview
+
+Breaking change ⚠️ — the `id_property:` DSL option is replaced by a
+mandatory `match_by: {property:, value:}` option, decoupling **matching**
+(how Etlify finds the CRM record) from the **payload** (what the serializer
+syncs):
+
+- `property`: the unique CRM property used to match (e.g. `:email` for
+  HubSpot contacts).
+- `value`: how to resolve the matching value from the record — a method
+  name Symbol (`value: :email`) or a Proc (`value: ->(r) { r.email }`).
+
+The serializer payload is now synced **as-is** on every path (single and
+batch). The matching property is only written at **creation** time (when
+the payload does not already carry it), and is **never** written on an
+existing record unless the serializer explicitly includes it.
+
+**Why:** with `id_property`, the matching value had to live inside the
+payload, so updates pushed it to the CRM. On HubSpot, writing `email` on a
+contact **replaces its primary email** — and since matching also covers
+secondary emails (`hs_additional_emails`), a user signing up with an email
+that was a contact's *secondary* email would silently overwrite the
+contact's *primary* email on the next sync. With `match_by`, simply leave
+`email` out of your serializer and the sync will never touch the contact's
+emails (it is still set at creation when the contact does not exist).
+
+---
+
+## 2. Database migrations
+
+No database migration required for this upgrade.
+
+---
+
+## 3. Configuration changes (required)
+
+Replace `id_property:` with `match_by:` on every etlified model:
+
+```ruby
+# Before
+hubspot_etlified_with(
+  serializer: UserSerializer,
+  crm_object_type: "contacts",
+  id_property: :email
+)
+
+# After — email left OUT of the serializer: never synced, only used to
+# match (and set at creation). Recommended for HubSpot contacts.
+hubspot_etlified_with(
+  serializer: UserSerializer, # remove `email` from this serializer
+  crm_object_type: "contacts",
+  match_by: {property: :email, value: :email}
+)
+
+# After — custom unique property kept IN the serializer: synced as before.
+hubspot_etlified_with(
+  serializer: ProjectSerializer, # still includes swc_uuid
+  crm_object_type: "p1234567_project",
+  match_by: {property: :swc_uuid, value: :id}
+)
+```
+
+Notes:
+
+- `value:` accepts a Symbol (method called on the record) or a Proc
+  receiving the record.
+- A record with no `crm_id` whose matching value resolves blank now fails
+  explicitly (`:error` + `error_count` bump) instead of creating an
+  unmatched CRM record. Blank is fine once a `crm_id` is known.
+- If you keep the matching property in the serializer, its value should
+  equal `match_by`'s resolved value; on Airtable's `performUpsert` the
+  payload value wins and a divergent value prevents the returned mapping
+  from being keyed by your input value (the `crm_id` would not be
+  persisted on first sync).
+
+---
+
+## 4. Custom adapters (required if you have any)
+
+The adapter interface changed:
+
+```ruby
+# Before
+def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
+def batch_upsert!(object_type:, records:, id_property:)
+
+# After
+def upsert!(object_type:, payload:, match_property:, match_value:, crm_id: nil)
+def batch_upsert!(object_type:, inputs:, match_property:)
+# inputs: Array of {value:, properties:}
+# returns: Hash mapping each input's value (as provided) to the CRM id
+```
+
+Contract to honour: sync the payload as-is; never write `match_property`
+on an existing record unless the payload includes it; only set it at
+creation when the payload does not carry it. See `README.md` ("Writing
+your own adapter").
+
+---
+
+## 5. Expected behaviour after upgrading
+
+- Removing a property from a serializer (e.g. `email`) changes every
+  record's digest: expect a one-off full re-sync on the next
+  `StaleRecords::BatchSync` pass (bounded by your `rate_limit` options).
+- HubSpot contacts already damaged by the previous behaviour (primary
+  email overwritten) are **not** repaired automatically.
+
+---
+
 # UPGRADING FROM 0.11.2 -> 0.11.3
 
 ## 1. Overview
