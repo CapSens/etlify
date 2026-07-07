@@ -688,10 +688,10 @@ end
 ### Behaviour
 
 - `object_type`: the Intercom resource (e.g. `"contacts"`, `"companies"`).
-- `id_property`: unique attribute used to deduplicate (e.g. `"external_id"` for contacts, `"company_id"` for companies). The adapter searches via `POST /{object_type}/search` with the query `{field:, operator: "=", value:}`.
+- `match_by`: the matching property (e.g. `"external_id"` for contacts, `"company_id"` for companies) is used to find the record via `POST /{object_type}/search` with the query `{field:, operator: "=", value:}`. The payload is synced as-is: the matching property is only written at creation time (when the payload does not already carry it) and never on an existing record.
 - `crm_id`: if known (already persisted in `crm_synchronisations`), the adapter skips the search and `PUT`s directly on `/{object_type}/{crm_id}`.
-- For contacts, the `email` attribute is lowercased before search and create (parity with the HubSpot adapter).
-- Intercom does **not** expose batch endpoints: `batch_upsert!` and `batch_delete!` loop sequentially over `upsert!` / `delete!`. The configured `rate_limit` is enforced on every HTTP call, so behaviour stays correct under high volumes.
+- For contacts matched by `email`, the matching value is lowercased before search, and a payload `email` is lowercased before create/update (parity with the HubSpot adapter).
+- Intercom does **not** expose batch endpoints: `batch_upsert!`, `batch_update!` and `batch_delete!` loop sequentially over the single-record calls. The configured `rate_limit` is enforced on every HTTP call, so behaviour stays correct under high volumes.
 
 ### Example: contact upsert by external_id
 
@@ -702,7 +702,7 @@ class User < ApplicationRecord
   intercom_etlified_with(
     serializer: UserIntercomSerializer,
     crm_object_type: "contacts",
-    id_property: :external_id,
+    match_by: {property: :external_id, value: ->(user) { user.id.to_s }},
     sync_if: ->(user) { user.email.present? }
   )
 end
@@ -720,7 +720,7 @@ class Company < ApplicationRecord
   intercom_etlified_with(
     serializer: CompanyIntercomSerializer,
     crm_object_type: "companies",
-    id_property: :company_id
+    match_by: {property: :company_id, value: ->(company) { company.id.to_s }}
   )
 end
 ```

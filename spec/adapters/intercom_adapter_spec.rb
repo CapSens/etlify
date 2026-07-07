@@ -12,16 +12,16 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
   describe "#initialize" do
     it "defaults to the US region and Intercom-Version 2.14" do
       expect(http).to receive(:request).with(
-        :post,
-        "https://api.intercom.io/contacts",
+        :delete,
+        "https://api.intercom.io/contacts/abc",
         headers: hash_including(
           "Authorization" => "Bearer #{token}",
           "Intercom-Version" => "2.14"
         ),
-        body: kind_of(String)
-      ).and_return({status: 200, body: {id: "abc"}.to_json})
+        body: nil
+      ).and_return({status: 200, body: "{}"})
 
-      adapter.upsert!(object_type: "contacts", payload: {email: "a@b.com"})
+      adapter.delete!(object_type: "contacts", crm_id: "abc")
     end
 
     it "uses the EU base URL when region: :eu" do
@@ -30,13 +30,13 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       )
 
       expect(http).to receive(:request).with(
-        :post,
-        "https://api.eu.intercom.io/contacts",
+        :delete,
+        "https://api.eu.intercom.io/contacts/abc",
         headers: hash_including("Authorization" => "Bearer #{token}"),
-        body: kind_of(String)
-      ).and_return({status: 200, body: {id: "abc"}.to_json})
+        body: nil
+      ).and_return({status: 200, body: "{}"})
 
-      eu_adapter.upsert!(object_type: "contacts", payload: {email: "a@b.com"})
+      eu_adapter.delete!(object_type: "contacts", crm_id: "abc")
     end
 
     it "uses the AU base URL when region: :au" do
@@ -45,12 +45,13 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       )
 
       expect(http).to receive(:request).with(
-        :post,
-        "https://api.au.intercom.io/contacts",
-        anything
-      ).and_return({status: 200, body: {id: "abc"}.to_json})
+        :delete,
+        "https://api.au.intercom.io/contacts/abc",
+        headers: anything,
+        body: nil
+      ).and_return({status: 200, body: "{}"})
 
-      au_adapter.upsert!(object_type: "contacts", payload: {email: "a@b.com"})
+      au_adapter.delete!(object_type: "contacts", crm_id: "abc")
     end
 
     it "honors a custom api_version" do
@@ -59,15 +60,13 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       )
 
       expect(http).to receive(:request).with(
-        :post,
-        "https://api.intercom.io/contacts",
+        :delete,
+        "https://api.intercom.io/contacts/abc",
         headers: hash_including("Intercom-Version" => "2.11"),
-        body: kind_of(String)
-      ).and_return({status: 200, body: {id: "abc"}.to_json})
+        body: nil
+      ).and_return({status: 200, body: "{}"})
 
-      custom_adapter.upsert!(
-        object_type: "contacts", payload: {email: "a@b.com"}
-      )
+      custom_adapter.delete!(object_type: "contacts", crm_id: "abc")
     end
 
     it "raises on an unknown region" do
@@ -78,8 +77,8 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
   end
 
   describe "#upsert!" do
-    context "when object exists (search by id_property)" do
-      it "PUTs the object and returns its id", :aggregate_failures do
+    context "when object exists (search by match_property)" do
+      it "PUTs the payload as-is and returns its id", :aggregate_failures do
         expect(http).to receive(:request).with(
           :post,
           "https://api.intercom.io/contacts/search",
@@ -96,24 +95,22 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
           {status: 200, body: {data: [{"id" => "abc123"}]}.to_json}
         )
 
+        # The matching property is never written on an existing object
+        # unless the payload explicitly includes it.
         expect(http).to receive(:request).with(
           :put,
           "https://api.intercom.io/contacts/abc123",
           headers: hash_including("Authorization" => "Bearer #{token}"),
           body: satisfy do |body|
-            json = JSON.parse(body)
-            json == {
-              "external_id" => "u_1",
-              "email" => "john@example.com",
-              "name" => "John",
-            }
+            JSON.parse(body) == {"name" => "John"}
           end
         ).and_return({status: 200, body: "{}"})
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {external_id: "u_1", email: "john@example.com", name: "John"},
-          id_property: "external_id"
+          payload: {name: "John"},
+          match_property: "external_id",
+          match_value: "u_1"
         )
         expect(id).to eq("abc123")
       end
@@ -138,8 +135,27 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "john@example.com", name: "John"},
-          id_property: "external_id",
+          payload: {name: "John"},
+          match_property: "external_id",
+          match_value: "u_1",
+          crm_id: "abc123"
+        )
+        expect(id).to eq("abc123")
+      end
+
+      it "accepts a blank match_value when crm_id is known" do
+        expect(http).to receive(:request).with(
+          :put,
+          "https://api.intercom.io/contacts/abc123",
+          headers: anything,
+          body: kind_of(String)
+        ).and_return({status: 200, body: "{}"})
+
+        id = adapter.upsert!(
+          object_type: "contacts",
+          payload: {name: "John"},
+          match_property: "external_id",
+          match_value: nil,
           crm_id: "abc123"
         )
         expect(id).to eq("abc123")
@@ -147,7 +163,8 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
     end
 
     context "when object does not exist yet" do
-      it "POSTs a new object and returns its id", :aggregate_failures do
+      it "POSTs a new object with the match property and returns its id",
+         :aggregate_failures do
         expect(http).to receive(:request).with(
           :post,
           "https://api.intercom.io/contacts/search",
@@ -155,6 +172,8 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
           body: kind_of(String)
         ).and_return({status: 200, body: {data: []}.to_json})
 
+        # The matching property is written at creation time when the
+        # payload does not already carry it.
         expect(http).to receive(:request).with(
           :post,
           "https://api.intercom.io/contacts",
@@ -168,28 +187,36 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
 
         id = adapter.upsert!(
           object_type: "contacts",
-          payload: {external_id: "u_1", email: "john@example.com"},
-          id_property: "external_id"
+          payload: {email: "john@example.com"},
+          match_property: "external_id",
+          match_value: "u_1"
         )
         expect(id).to eq("abc999")
       end
-    end
 
-    context "when no id_property is provided" do
-      it "creates directly and returns the new id", :aggregate_failures do
+      it "lets the payload win over match_value at creation time",
+         :aggregate_failures do
         expect(http).to receive(:request).with(
           :post,
-          "https://api.intercom.io/companies",
-          headers: hash_including("Authorization" => "Bearer #{token}"),
-          body: satisfy do |body|
-            JSON.parse(body) == {"name" => "ACME"}
-          end
-        ).and_return({status: 200, body: {id: "co_1"}.to_json})
+          %r{/contacts/search},
+          anything
+        ).and_return({status: 200, body: {data: []}.to_json})
 
-        id = adapter.upsert!(
-          object_type: "companies", payload: {name: "ACME"}
+        expect(http).to receive(:request).with(
+          :post,
+          "https://api.intercom.io/contacts",
+          headers: anything,
+          body: satisfy do |body|
+            JSON.parse(body)["external_id"] == "custom"
+          end
+        ).and_return({status: 200, body: {id: "abc999"}.to_json})
+
+        adapter.upsert!(
+          object_type: "contacts",
+          payload: {external_id: "custom"},
+          match_property: "external_id",
+          match_value: "u_1"
         )
-        expect(id).to eq("co_1")
       end
     end
 
@@ -221,15 +248,16 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
 
         id = adapter.upsert!(
           object_type: "companies",
-          payload: {company_id: "ext_42", name: "ACME"},
-          id_property: "company_id"
+          payload: {name: "ACME"},
+          match_property: "company_id",
+          match_value: "ext_42"
         )
         expect(id).to eq("co_42")
       end
     end
 
-    it "lowercases email for contacts on search and create",
-       :aggregate_failures do
+    it "lowercases the email match_value on search and the payload email " \
+       "on create for contacts", :aggregate_failures do
       expect(http).to receive(:request).with(
         :post,
         "https://api.intercom.io/contacts/search",
@@ -251,7 +279,8 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       adapter.upsert!(
         object_type: "contacts",
         payload: {email: "John@Example.COM"},
-        id_property: "email"
+        match_property: "email",
+        match_value: "John@Example.COM"
       )
     end
 
@@ -276,37 +305,50 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       id = adapter.upsert!(
         object_type: "contacts",
         payload: {"email" => "a@b.com", :name => "A"},
-        id_property: "email"
+        match_property: "email",
+        match_value: "a@b.com"
       )
       expect(id).to eq("abc")
     end
 
     it "raises on invalid arguments", :aggregate_failures do
       expect do
-        adapter.upsert!(object_type: "", payload: {})
-      end.to raise_error(ArgumentError)
+        adapter.upsert!(
+          object_type: "",
+          payload: {},
+          match_property: "email",
+          match_value: "a@b.com"
+        )
+      end.to raise_error(ArgumentError, /object_type/)
 
       expect do
-        adapter.upsert!(object_type: "contacts", payload: "not a hash")
-      end.to raise_error(ArgumentError)
+        adapter.upsert!(
+          object_type: "contacts",
+          payload: "not a hash",
+          match_property: "email",
+          match_value: "a@b.com"
+        )
+      end.to raise_error(ArgumentError, /payload/)
+
+      expect do
+        adapter.upsert!(
+          object_type: "contacts",
+          payload: {},
+          match_property: "",
+          match_value: "a@b.com"
+        )
+      end.to raise_error(ArgumentError, /match_property/)
     end
 
-    it "creates directly when id_property is missing from payload" do
-      expect(http).not_to receive(:request).with(
-        :post, %r{/contacts/search}, anything
-      )
-
-      expect(http).to receive(:request).with(
-        :post,
-        "https://api.intercom.io/contacts",
-        headers: hash_including("Authorization" => "Bearer #{token}"),
-        body: satisfy { |body| JSON.parse(body)["name"] == "J" }
-      ).and_return({status: 200, body: {id: "abc"}.to_json})
-
-      id = adapter.upsert!(
-        object_type: "contacts", payload: {name: "J"}, id_property: "email"
-      )
-      expect(id).to eq("abc")
+    it "raises ArgumentError when match_value is blank and crm_id unknown" do
+      expect do
+        adapter.upsert!(
+          object_type: "contacts",
+          payload: {name: "J"},
+          match_property: "email",
+          match_value: "  "
+        )
+      end.to raise_error(ArgumentError, /match_value/)
     end
 
     it "treats malformed 200 search payload as not found then creates",
@@ -325,8 +367,9 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
 
       id = adapter.upsert!(
         object_type: "contacts",
-        payload: {email: "x@y.com"},
-        id_property: "email"
+        payload: {},
+        match_property: "email",
+        match_value: "x@y.com"
       )
       expect(id).to eq("new")
     end
@@ -346,8 +389,9 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
 
       id = adapter.upsert!(
         object_type: "contacts",
-        payload: {email: "x@y.com"},
-        id_property: "email"
+        payload: {},
+        match_property: "email",
+        match_value: "x@y.com"
       )
       expect(id).to eq("new")
     end
@@ -380,8 +424,9 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "x@y.com"},
-          id_property: "email"
+          payload: {},
+          match_property: "email",
+          match_value: "x@y.com"
         )
       end.to raise_error(Etlify::ValidationFailed, /Email is invalid/)
     end
@@ -406,8 +451,9 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "a@b.com"},
-          id_property: "email"
+          payload: {},
+          match_property: "email",
+          match_value: "a@b.com"
         )
       end.to raise_error(Etlify::RateLimited, /Too many requests/)
     end
@@ -428,8 +474,9 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "x@y.com"},
-          id_property: "email"
+          payload: {},
+          match_property: "email",
+          match_value: "x@y.com"
         )
       end.to raise_error(Etlify::Unauthorized, /Bad token/)
     end
@@ -450,8 +497,9 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "x@y.com"},
-          id_property: "email"
+          payload: {},
+          match_property: "email",
+          match_value: "x@y.com"
         )
       end.to raise_error(Etlify::Unauthorized, /Nope/)
     end
@@ -465,8 +513,9 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "x@y.com"},
-          id_property: "email"
+          payload: {},
+          match_property: "email",
+          match_value: "x@y.com"
         )
       end.to raise_error(Etlify::ApiError, /Intercom API request failed/)
     end
@@ -486,8 +535,9 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       expect do
         adapter.upsert!(
           object_type: "contacts",
-          payload: {email: "x@y.com"},
-          id_property: "email"
+          payload: {},
+          match_property: "email",
+          match_value: "x@y.com"
         )
       end.to raise_error(Etlify::TransportError, /tcp reset/)
     end
@@ -501,8 +551,9 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
         expect do
           adapter.upsert!(
             object_type: "contacts",
-            payload: {email: "x@y.com"},
-            id_property: "email"
+            payload: {},
+            match_property: "email",
+            match_value: "x@y.com"
           )
         end.to raise_error(
           Etlify::TransportError, /HTTP transport error: StandardError: boom/
@@ -513,7 +564,11 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
     it "sends standard JSON headers including Intercom-Version on create",
        :aggregate_failures do
       expect(http).to receive(:request).with(
-        :post, %r{/companies},
+        :post, %r{/companies/search}, anything
+      ).and_return({status: 200, body: {data: []}.to_json})
+
+      expect(http).to receive(:request).with(
+        :post, "https://api.intercom.io/companies",
         headers: include(
           "Authorization" => "Bearer #{token}",
           "Content-Type" => "application/json",
@@ -524,7 +579,10 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       ).and_return({status: 200, body: {id: "co_1"}.to_json})
 
       id = adapter.upsert!(
-        object_type: "companies", payload: {name: "ACME"}
+        object_type: "companies",
+        payload: {name: "ACME"},
+        match_property: "company_id",
+        match_value: "ext_1"
       )
       expect(id).to eq("co_1")
     end
@@ -631,7 +689,7 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
   end
 
   describe "#batch_upsert!" do
-    it "loops sequentially over upsert! and aggregates the mapping",
+    it "loops sequentially over upsert! and maps values as provided",
        :aggregate_failures do
       # John: search hit + update
       expect(http).to receive(:request).with(
@@ -659,17 +717,17 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
 
       result = adapter.batch_upsert!(
         object_type: "contacts",
-        records: [
-          {external_id: "u_1", email: "john@example.com"},
-          {external_id: "u_2", email: "jane@example.com"},
+        inputs: [
+          {value: "u_1", properties: {email: "john@example.com"}},
+          {value: "u_2", properties: {email: "jane@example.com"}},
         ],
-        id_property: "external_id"
+        match_property: "external_id"
       )
 
       expect(result).to eq("u_1" => "id_1", "u_2" => "id_2")
     end
 
-    it "skips records without an id_property value", :aggregate_failures do
+    it "accepts string keys in inputs", :aggregate_failures do
       expect(http).to receive(:request).with(
         :post,
         "https://api.intercom.io/contacts/search",
@@ -682,48 +740,78 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
 
       result = adapter.batch_upsert!(
         object_type: "contacts",
-        records: [
-          {external_id: "u_1", email: "a@b.com"},
-          {email: "no-id@example.com"},
-        ],
-        id_property: "external_id"
+        inputs: [{"value" => "u_1", "properties" => {email: "a@b.com"}}],
+        match_property: "external_id"
       )
 
       expect(result).to eq("u_1" => "id_1")
+    end
+
+    it "keeps the mapping keyed by the value as provided when the CRM " \
+       "normalizes it", :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :post,
+        "https://api.intercom.io/contacts/search",
+        headers: anything,
+        body: satisfy do |b|
+          JSON.parse(b)["query"]["value"] == "john@example.com"
+        end
+      ).and_return({status: 200, body: {data: []}.to_json})
+      expect(http).to receive(:request).with(
+        :post, "https://api.intercom.io/contacts", anything
+      ).and_return({status: 200, body: {id: "id_1"}.to_json})
+
+      result = adapter.batch_upsert!(
+        object_type: "contacts",
+        inputs: [{value: "John@Example.COM", properties: {}}],
+        match_property: "email"
+      )
+
+      expect(result).to eq("John@Example.COM" => "id_1")
+    end
+
+    it "raises ArgumentError when an input carries a blank value" do
+      expect do
+        adapter.batch_upsert!(
+          object_type: "contacts",
+          inputs: [{value: "", properties: {email: "a@b.com"}}],
+          match_property: "external_id"
+        )
+      end.to raise_error(ArgumentError, /non-blank :value/)
     end
 
     it "raises ArgumentError on invalid arguments", :aggregate_failures do
       expect do
         adapter.batch_upsert!(
           object_type: "",
-          records: [{external_id: "u_1"}],
-          id_property: "external_id"
+          inputs: [{value: "u_1", properties: {}}],
+          match_property: "external_id"
         )
       end.to raise_error(ArgumentError, /object_type/)
 
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: [{external_id: "u_1"}],
-          id_property: nil
+          inputs: [{value: "u_1", properties: {}}],
+          match_property: nil
         )
-      end.to raise_error(ArgumentError, /id_property/)
+      end.to raise_error(ArgumentError, /match_property/)
 
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: "not array",
-          id_property: "external_id"
+          inputs: "not array",
+          match_property: "external_id"
         )
-      end.to raise_error(ArgumentError, /records/)
+      end.to raise_error(ArgumentError, /inputs/)
 
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: [],
-          id_property: "external_id"
+          inputs: [],
+          match_property: "external_id"
         )
-      end.to raise_error(ArgumentError, /records/)
+      end.to raise_error(ArgumentError, /inputs/)
     end
 
     it "propagates RateLimited from the underlying upsert!" do
@@ -742,8 +830,122 @@ RSpec.describe Etlify::Adapters::IntercomAdapter do
       expect do
         adapter.batch_upsert!(
           object_type: "contacts",
-          records: [{external_id: "u_1", email: "a@b.com"}],
-          id_property: "external_id"
+          inputs: [{value: "u_1", properties: {email: "a@b.com"}}],
+          match_property: "external_id"
+        )
+      end.to raise_error(Etlify::RateLimited, /Too many/)
+    end
+  end
+
+  describe "#batch_update!" do
+    it "PUTs each record by crm_id and returns an identity mapping",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :put,
+        "https://api.intercom.io/contacts/id_1",
+        headers: hash_including("Authorization" => "Bearer #{token}"),
+        body: satisfy { |b| JSON.parse(b) == {"name" => "John"} }
+      ).and_return({status: 200, body: "{}"})
+
+      expect(http).to receive(:request).with(
+        :put,
+        "https://api.intercom.io/contacts/id_2",
+        headers: hash_including("Authorization" => "Bearer #{token}"),
+        body: satisfy { |b| JSON.parse(b) == {"name" => "Jane"} }
+      ).and_return({status: 200, body: "{}"})
+
+      result = adapter.batch_update!(
+        object_type: "contacts",
+        records: [
+          {crm_id: "id_1", properties: {name: "John"}},
+          {crm_id: "id_2", properties: {name: "Jane"}},
+        ]
+      )
+
+      expect(result).to eq("id_1" => "id_1", "id_2" => "id_2")
+    end
+
+    it "accepts string keys and lowercases contact emails",
+       :aggregate_failures do
+      expect(http).to receive(:request).with(
+        :put,
+        "https://api.intercom.io/contacts/id_1",
+        headers: anything,
+        body: satisfy { |b| JSON.parse(b)["email"] == "john@example.com" }
+      ).and_return({status: 200, body: "{}"})
+
+      result = adapter.batch_update!(
+        object_type: "contacts",
+        records: [
+          {"crm_id" => "id_1", "properties" => {email: "John@Example.COM"}},
+        ]
+      )
+
+      expect(result).to eq("id_1" => "id_1")
+    end
+
+    it "raises ArgumentError on invalid arguments", :aggregate_failures do
+      expect do
+        adapter.batch_update!(
+          object_type: "",
+          records: [{crm_id: "id_1", properties: {}}]
+        )
+      end.to raise_error(ArgumentError, /object_type/)
+
+      expect do
+        adapter.batch_update!(object_type: "contacts", records: "not array")
+      end.to raise_error(ArgumentError, /records/)
+
+      expect do
+        adapter.batch_update!(object_type: "contacts", records: [])
+      end.to raise_error(ArgumentError, /records/)
+
+      expect do
+        adapter.batch_update!(
+          object_type: "contacts",
+          records: [{crm_id: "", properties: {}}]
+        )
+      end.to raise_error(ArgumentError, /crm_id/)
+    end
+
+    it "raises NotFound when a crm_id points to a deleted object" do
+      expect(http).to receive(:request).with(
+        :put, "https://api.intercom.io/contacts/gone", anything
+      ).and_return(
+        {
+          status: 404,
+          body: {
+            type: "error.list",
+            errors: [{code: "not_found", message: "Contact Not Found"}],
+          }.to_json,
+        }
+      )
+
+      expect do
+        adapter.batch_update!(
+          object_type: "contacts",
+          records: [{crm_id: "gone", properties: {name: "J"}}]
+        )
+      end.to raise_error(Etlify::NotFound, /Contact Not Found/)
+    end
+
+    it "propagates RateLimited from the underlying update" do
+      expect(http).to receive(:request).with(
+        :put, %r{/contacts/id_1}, anything
+      ).and_return(
+        {
+          status: 429,
+          body: {
+            type: "error.list",
+            errors: [{code: "rate_limit", message: "Too many"}],
+          }.to_json,
+        }
+      )
+
+      expect do
+        adapter.batch_update!(
+          object_type: "contacts",
+          records: [{crm_id: "id_1", properties: {name: "J"}}]
         )
       end.to raise_error(Etlify::RateLimited, /Too many/)
     end

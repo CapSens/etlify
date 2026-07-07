@@ -17,6 +17,12 @@ module Etlify
     # - Transport-level issues raise TransportError.
     # - delete! returns false on 404 (object not found), raises otherwise.
     #
+    # Matching contract: the payload is synced as-is. `match_property` /
+    # `match_value` are only used to find the object (or to set the property
+    # at creation time when the payload does not include it). The matching
+    # property is NEVER written on an existing object unless the payload
+    # explicitly includes it.
+    #
     # Usage:
     #   adapter = Etlify::Adapters::IntercomAdapter.new(
     #     access_token: ENV["INTERCOM_ACCESS_TOKEN"],
@@ -24,8 +30,10 @@ module Etlify
     #   )
     #   adapter.upsert!(
     #     object_type: "contacts",
-    #     payload: {email: "john@example.com", external_id: "u_1"},
-    #     id_property: "external_id"
+    #     payload: {name: "John"},
+    #     match_property: "email",
+    #     match_value: "john@example.com",
+    #     crm_id: nil
     #   )
     #   adapter.delete!(object_type: "contacts", crm_id: "abc123")
     class IntercomAdapter
@@ -60,38 +68,47 @@ module Etlify
         @http         = http_client || Etlify::Adapters::DefaultHttp.new
       end
 
-      # Upsert by searching on id_property (if provided), otherwise create
-      # directly. If crm_id is provided, skip the search and PUT directly.
+      # Upsert by crm_id when known, otherwise search on match_property /
+      # match_value, otherwise create.
       # @param object_type [String] Intercom resource (e.g. "contacts", "companies")
-      # @param payload [Hash] Attributes for the object
-      # @param id_property [String, nil] Unique property used to search
-      # @param crm_id [String, nil] Intercom id if already known
+      # @param payload [Hash] Attributes for the object, synced as-is
+      # @param match_property [String, Symbol] Unique property used to search
+      #   (e.g. "email" or "external_id" for contacts)
+      # @param match_value [String] Value of match_property for this record
+      # @param crm_id [String, nil] Intercom id if already known (skips the
+      #   match_property search entirely)
       # @return [String, nil] Intercom id as string or nil if not available
-      def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
+      def upsert!(object_type:, payload:, match_property:, match_value:, crm_id: nil)
         if !object_type.is_a?(String) || object_type.empty?
           raise ArgumentError, "object_type must be a String"
         end
         raise ArgumentError, "payload must be a Hash" unless payload.is_a?(Hash)
+        if match_property.to_s.strip.empty?
+          raise ArgumentError, "match_property must be provided"
+        end
+
+        prop  = match_property.to_s
+        value = normalize_match_value(prop, match_value)
+
+        object_id = if crm_id.to_s.strip.empty?
+          if value.empty?
+            raise ArgumentError,
+                  "match_value must be provided when crm_id is unknown"
+          end
+
+          find_object_id_by_property(object_type, prop, value)
+        else
+          crm_id.to_s.strip
+        end
 
         properties = stringify_keys(payload)
         normalize_email!(object_type, properties)
-
-        if !crm_id.to_s.strip.empty?
-          object_id = crm_id.to_s.strip
-        elsif id_property
-          key = id_property.to_s
-          unique_value = properties[key]
-          object_id =
-            if unique_value
-              find_object_id_by_property(object_type, key, unique_value)
-            end
-        end
 
         if object_id
           update_object(object_type, object_id, properties)
           object_id.to_s
         else
-          create_object(object_type, properties)
+          create_object(object_type, properties, prop, value)
         end
       end
 
@@ -118,31 +135,64 @@ module Etlify
 
       # Sequential batch upsert. Intercom has no native batch endpoint, so
       # this loops over the single-record upsert!.
-      # @return [Hash{String => String}] mapping of id_property value to Intercom id
-      def batch_upsert!(object_type:, records:, id_property:)
+      # @param object_type [String] Intercom resource
+      # @param inputs [Array<Hash>] each {value:, properties:} where value is
+      #   the match_property value and properties the payload, synced as-is
+      # @param match_property [String] Unique property for matching (e.g. "email")
+      # @return [Hash{String => String}] mapping of each input's value (as
+      #   provided) to Intercom id
+      def batch_upsert!(object_type:, inputs:, match_property:)
         if !object_type.is_a?(String) || object_type.empty?
           raise ArgumentError, "object_type must be a String"
         end
-        if id_property.to_s.empty?
-          raise ArgumentError, "id_property must be provided"
+        if match_property.to_s.strip.empty?
+          raise ArgumentError, "match_property must be provided"
+        end
+        if !inputs.is_a?(Array) || inputs.empty?
+          raise ArgumentError, "inputs must be a non-empty Array"
+        end
+
+        prop = match_property.to_s
+
+        inputs.each_with_object({}) do |input, mapping|
+          raw = fetch_input(input, :value).to_s
+          if normalize_match_value(prop, raw).empty?
+            raise ArgumentError, "every input must carry a non-blank :value"
+          end
+
+          crm_id = upsert!(
+            object_type: object_type,
+            payload: fetch_input(input, :properties) || {},
+            match_property: prop,
+            match_value: raw
+          )
+          mapping[raw] = crm_id.to_s if crm_id
+        end
+      end
+
+      # Sequential batch update by known Intercom id. Intercom has no native
+      # batch endpoint, so this loops over the single-record PUT.
+      # @param object_type [String] Intercom resource
+      # @param records [Array<Hash>] each {crm_id:, properties:}
+      # @return [Hash{String => String}] identity mapping {crm_id => crm_id}
+      def batch_update!(object_type:, records:)
+        if !object_type.is_a?(String) || object_type.empty?
+          raise ArgumentError, "object_type must be a String"
         end
         if !records.is_a?(Array) || records.empty?
           raise ArgumentError, "records must be a non-empty Array"
         end
 
-        key = id_property.to_s
-
         records.each_with_object({}) do |record, mapping|
-          properties = stringify_keys(record)
-          unique_value = properties[key].to_s
-          next if unique_value.empty?
+          id = fetch_crm_id(record)
+          if id.empty?
+            raise ArgumentError, "every record must carry a non-blank :crm_id"
+          end
 
-          crm_id = upsert!(
-            object_type: object_type,
-            payload: record,
-            id_property: id_property
-          )
-          mapping[unique_value] = crm_id.to_s if crm_id
+          properties = stringify_keys(record[:properties] || record["properties"] || {})
+          normalize_email!(object_type, properties)
+          update_object(object_type, id, properties)
+          mapping[id] = id
         end
       end
 
@@ -278,7 +328,13 @@ module Etlify
         true
       end
 
-      def create_object(object_type, properties)
+      def create_object(object_type, properties, match_property, match_value)
+        # The matching property is only written at creation time, and only
+        # when the payload does not already carry it (payload wins).
+        if !match_value.empty? && !properties.key?(match_property)
+          properties = properties.merge(match_property => match_value)
+        end
+
         path = "/#{object_type}"
         response = request(:post, path, body: properties)
         if response[:status].between?(200, 299) &&
@@ -287,6 +343,19 @@ module Etlify
         end
 
         raise_for_error!(response, path: path)
+      end
+
+      def normalize_match_value(match_property, value)
+        clean = value.to_s.strip
+        (match_property == "email") ? clean.downcase : clean
+      end
+
+      def fetch_input(input, key)
+        input[key] || input[key.to_s]
+      end
+
+      def fetch_crm_id(record)
+        (record[:crm_id] || record["crm_id"]).to_s.strip
       end
 
       def normalize_email!(object_type, properties)
