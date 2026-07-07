@@ -264,6 +264,51 @@ RSpec.describe Etlify::BatchSynchronizer do
       end
     end
 
+    context "when batch_upsert! mapping omits a record" do
+      it "marks the omitted record :error and keeps it stale",
+         :aggregate_failures do
+        user1 = create_user!(index: 1)
+        user2 = create_user!(index: 2)
+
+        # The CRM answered but the mapping lacks user2 (e.g. the response
+        # does not echo the match property back).
+        allow(adapter).to receive(:batch_upsert!)
+          .and_return("user1@example.com" => "rec_1")
+
+        stats = described_class.call([user1, user2], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(1)
+        expect(stats[:errors]).to eq(1)
+
+        line1 = CrmSynchronisation.find_by(resource: user1, crm_name: "hubspot")
+        expect(line1.crm_id).to eq("rec_1")
+        expect(line1.error_count).to eq(0)
+
+        line2 = CrmSynchronisation.find_by(resource: user2, crm_name: "hubspot")
+        expect(line2.crm_id).to be_nil
+        expect(line2.last_digest).to be_nil
+        expect(line2.error_count).to eq(1)
+        expect(line2.last_error).to include("no crm_id")
+      end
+
+      it "marks every record :error when the mapping is empty",
+         :aggregate_failures do
+        user = create_user!(index: 1)
+
+        allow(adapter).to receive(:batch_upsert!).and_return({})
+
+        stats = described_class.call([user], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(0)
+        expect(stats[:errors]).to eq(1)
+
+        line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+        expect(line.crm_id).to be_nil
+        expect(line.last_digest).to be_nil
+        expect(line.error_count).to eq(1)
+      end
+    end
+
     context "when RateLimited is raised in the post-batch per-record loop" do
       it "re-raises RateLimited and does not bump error_count",
          :aggregate_failures do

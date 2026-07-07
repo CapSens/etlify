@@ -72,8 +72,9 @@ Notes:
 - If you keep the matching property in the serializer, its value should
   equal `match_by`'s resolved value; on Airtable's `performUpsert` the
   payload value wins and a divergent value prevents the returned mapping
-  from being keyed by your input value (the `crm_id` would not be
-  persisted on first sync).
+  from being keyed by your input value. The record then fails explicitly
+  (`:error` + `error_count` bump) on first sync — it stays stale and is
+  retried until the values are aligned or `max_sync_errors` excludes it.
 
 ---
 

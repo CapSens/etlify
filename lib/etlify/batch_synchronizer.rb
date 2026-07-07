@@ -171,7 +171,21 @@ module Etlify
       )
 
       apply_batch_results!(items) do |item|
-        crm_id_mapping[item[:match_value]]
+        crm_id = crm_id_mapping[item[:match_value]]
+        if crm_id.blank?
+          # A missing mapping entry means the CRM never confirmed this
+          # record: marking it synced would persist crm_id nil with a fresh
+          # digest and the record would never be retried. Fail it explicitly
+          # (apply_batch_results! bumps error_count per item) so it stays
+          # stale and visible.
+          message = [
+            "batch_upsert! returned no crm_id for match value",
+            item[:match_value].inspect,
+          ].join(" ")
+          raise Etlify::SyncError, message
+        end
+
+        crm_id
       end
     rescue Etlify::RateLimited
       raise
