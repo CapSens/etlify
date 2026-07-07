@@ -246,6 +246,40 @@ RSpec.describe Etlify::Adapters::AirtableV0Adapter do
         )
         expect(id).to eq("recWIN001")
       end
+
+      it "keeps the payload value with a string-keyed match field",
+         :aggregate_failures do
+        expect(http).to receive(:request).with(
+          :get, /filterByFormula/, anything
+        ).and_return(
+          {status: 200, body: {records: []}.to_json}
+        )
+
+        expect(http).to receive(:request).with(
+          :post,
+          "https://api.airtable.com/v0/#{base_id}/#{table}",
+          headers: hash_including(
+            "Authorization" => "Bearer #{token}"
+          ),
+          body: satisfy do |body|
+            json = JSON.parse(body)
+            json["fields"] == {
+              "Email" => "payload@example.com",
+              "Name" => "P",
+            }
+          end
+        ).and_return(
+          {status: 200, body: {id: "recWIN002"}.to_json}
+        )
+
+        id = adapter.upsert!(
+          object_type: table,
+          payload: {"Email" => "payload@example.com", "Name" => "P"},
+          match_property: "Email",
+          match_value: "param@example.com"
+        )
+        expect(id).to eq("recWIN002")
+      end
     end
 
     context "when match_value is blank and crm_id is unknown" do

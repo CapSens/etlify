@@ -459,6 +459,35 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
       expect(id).to eq("1001")
     end
 
+    it "creates without crashing when the payload carries a nil email" do
+      # 1) Search → no results
+      expect(http).to receive(:request).with(
+        :post,
+        "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        headers: hash_including("Authorization" => "Bearer #{token}"),
+        body: kind_of(String)
+      ).and_return({status: 200, body: {results: []}.to_json})
+
+      # 2) Create: the nil email is kept as-is (payload wins), not downcased
+      expect(http).to receive(:request).with(
+        :post,
+        "https://api.hubapi.com/crm/v3/objects/contacts",
+        headers: hash_including("Authorization" => "Bearer #{token}"),
+        body: satisfy do |b|
+          props = JSON.parse(b)["properties"]
+          props.key?("email") && props["email"].nil?
+        end
+      ).and_return({status: 201, body: {id: "1002"}.to_json})
+
+      id = adapter.upsert!(
+        object_type: "contacts",
+        payload: {firstname: "J", email: nil},
+        match_property: "email",
+        match_value: "j@e.com"
+      )
+      expect(id).to eq("1002")
+    end
+
     it "treats malformed 200 search payload as not found then creates", :aggregate_failures do
       expect(http).to receive(:request).with(
         :post, "https://api.hubapi.com/crm/v3/objects/contacts/search", anything
@@ -1288,6 +1317,27 @@ RSpec.describe Etlify::Adapters::HubspotV3Adapter do
         match_property: "ref"
       )
       expect(result).to eq("ABC" => "42")
+    end
+
+    it "returns an empty mapping when the response omits the match property" do
+      expect(http).to receive(:request).with(
+        :post, upsert_url, anything
+      ).and_return(
+        {
+          status: 200,
+          body: {
+            status: "COMPLETE",
+            results: [{"id" => "301", "properties" => {}}],
+          }.to_json,
+        }
+      )
+
+      result = adapter.batch_upsert!(
+        object_type: "contacts",
+        inputs: [{value: "john@example.com", properties: {firstname: "John"}}],
+        match_property: "email"
+      )
+      expect(result).to eq({})
     end
 
     it "raises ArgumentError on invalid arguments",

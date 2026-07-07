@@ -77,5 +77,12 @@ RSpec.describe Etlify::MatchBy do
       conf = {match_by: {property: :swc_uuid, value: ->(_r) { 42 }}}
       expect(described_class.resolve(resource, conf)).to eq("42")
     end
+
+    it "propagates NoMethodError for an unknown Symbol" do
+      conf = {match_by: {property: :email, value: :unknown_method}}
+      expect do
+        described_class.resolve(resource, conf)
+      end.to raise_error(NoMethodError)
+    end
   end
 end

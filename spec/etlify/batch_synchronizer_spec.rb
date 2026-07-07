@@ -219,6 +219,74 @@ RSpec.describe Etlify::BatchSynchronizer do
         expect(line1.error_count).to eq(1)
         expect(line1.last_error).to include("broken resolver")
       end
+
+      it "never runs the resolver on not_modified records",
+         :aggregate_failures do
+        user = create_user!(index: 1)
+        described_class.call([user], crm_name: :hubspot)
+
+        allow(User).to receive(:etlify_crms).and_return(
+          {
+            hubspot: {
+              adapter: adapter,
+              match_by: {
+                property: :email,
+                value: ->(_u) { raise "broken resolver" },
+              },
+              crm_object_type: "contacts",
+              guard: nil,
+              sync_dependencies: [],
+            },
+          }
+        )
+
+        stats = described_class.call([user], crm_name: :hubspot)
+
+        expect(stats[:not_modified]).to eq(1)
+        expect(stats[:errors]).to eq(0)
+
+        line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+        expect(line.error_count).to eq(0)
+        expect(line.last_error).to be_nil
+      end
+
+      # Documents the current asymmetry: a blank value is tolerated when a
+      # crm_id is known (update by id), a raising resolver is not, because
+      # resolution happens before the crm_id partition.
+      it "fails records whose resolver raises even when a crm_id is known",
+         :aggregate_failures do
+        allow(User).to receive(:etlify_crms).and_return(
+          {
+            hubspot: {
+              adapter: adapter,
+              match_by: {
+                property: :email,
+                value: ->(_u) { raise "broken resolver" },
+              },
+              crm_object_type: "contacts",
+              guard: nil,
+              sync_dependencies: [],
+            },
+          }
+        )
+
+        user = create_user!(index: 1)
+        CrmSynchronisation.create!(
+          resource: user,
+          crm_name: "hubspot",
+          crm_id: "rec_1",
+          last_digest: "stale-digest"
+        )
+
+        stats = described_class.call([user], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(0)
+        expect(stats[:errors]).to eq(1)
+
+        line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+        expect(line.error_count).to eq(1)
+        expect(line.last_error).to include("broken resolver")
+      end
     end
 
     context "when adapter.batch_upsert! raises ValidationFailed" do
@@ -508,7 +576,8 @@ RSpec.describe Etlify::BatchSynchronizer do
   end
 
   describe "sequential fallback trigger scope" do
-    it "falls back on a 400 ApiError (HubSpot unique-property collision)" do
+    it "falls back on a 400 ApiError (HubSpot unique-property collision)",
+       :aggregate_failures do
       user = create_user!(index: 1)
       allow(adapter).to receive(:batch_upsert!)
         .and_raise(Etlify::ApiError.new("collision", status: 400))
@@ -516,6 +585,12 @@ RSpec.describe Etlify::BatchSynchronizer do
 
       stats = described_class.call([user], crm_name: :hubspot)
       expect(stats[:synced]).to eq(1)
+      expect(adapter).to have_received(:upsert!).with(
+        hash_including(
+          match_property: "email",
+          match_value: "user1@example.com"
+        )
+      )
     end
 
     it "does not fall back on RateLimited (bubbles up)", :aggregate_failures do

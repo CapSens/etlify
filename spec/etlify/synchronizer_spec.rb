@@ -166,6 +166,53 @@ RSpec.describe Etlify::Synchronizer do
       expect(result).to eq(:synced)
       expect(line.crm_id).to eq("existing-123")
     end
+
+    it "records :error when the value is blank and no crm_id is known",
+       :aggregate_failures do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :email, value: ->(_record) {}},
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      result = described_class.call(user, crm_name: :hubspot)
+      line = sync_lines_for(user).find_by(crm_name: "hubspot")
+
+      expect(result).to eq(:error)
+      expect(line.crm_id).to be_nil
+      expect(line.last_digest).to be_nil
+      expect(line.error_count).to eq(1)
+      expect(line.last_error).to include("match_value must be provided")
+    end
+
+    it "never runs the resolver on a :not_modified record",
+       :aggregate_failures do
+      expect(described_class.call(user, crm_name: :hubspot)).to eq(:synced)
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {
+              property: :email,
+              value: ->(_record) { raise "broken resolver" },
+            },
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      result = described_class.call(user, crm_name: :hubspot)
+      line = sync_lines_for(user).find_by(crm_name: "hubspot")
+
+      expect(result).to eq(:not_modified)
+      expect(line.error_count).to eq(0)
+      expect(line.last_error).to be_nil
+    end
   end
 
   context "memoization" do
