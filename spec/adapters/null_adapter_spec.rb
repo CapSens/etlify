@@ -27,15 +27,41 @@ RSpec.describe Etlify::Adapters::NullAdapter do
       ).to eq("rec_1")
     end
 
-    it "returns a generated id when match_value is blank" do
-      expect(
+    it "raises when match_value is blank and no crm_id is known" do
+      expect do
         described_class.new.upsert!(
           payload: payload,
           object_type: "contacts",
           match_property: "id",
           match_value: nil
         )
-      ).to be_a(String)
+      end.to raise_error(
+        ArgumentError, /match_value must be provided/
+      )
+    end
+
+    it "still returns the crm_id when match_value is blank" do
+      expect(
+        described_class.new.upsert!(
+          payload: payload,
+          object_type: "contacts",
+          match_property: "id",
+          match_value: nil,
+          crm_id: "rec_1"
+        )
+      ).to eq("rec_1")
+    end
+
+    it "treats a whitespace-only crm_id as absent" do
+      expect do
+        described_class.new.upsert!(
+          payload: payload,
+          object_type: "contacts",
+          match_property: "id",
+          match_value: nil,
+          crm_id: "   "
+        )
+      end.to raise_error(ArgumentError)
     end
   end
 
@@ -61,6 +87,28 @@ RSpec.describe Etlify::Adapters::NullAdapter do
 
       expect(mapping.keys).to eq(["a@example.com", "b@example.com"])
       expect(mapping.values).to all(be_a(String))
+    end
+
+    it "accepts string-keyed inputs" do
+      mapping = described_class.new.batch_upsert!(
+        object_type: "contacts",
+        inputs: [{"value" => "a@example.com", "properties" => {}}],
+        match_property: "email"
+      )
+
+      expect(mapping.keys).to eq(["a@example.com"])
+    end
+
+    it "raises when an input carries a blank value" do
+      expect do
+        described_class.new.batch_upsert!(
+          object_type: "contacts",
+          inputs: [{value: "  ", properties: {}}],
+          match_property: "email"
+        )
+      end.to raise_error(
+        ArgumentError, /non-blank :value/
+      )
     end
   end
 end

@@ -6,7 +6,14 @@ module Etlify
         return crm_id.to_s unless crm_id.to_s.strip.empty?
 
         value = match_value.to_s.strip
-        value.empty? ? SecureRandom.uuid : value
+        if value.empty?
+          # Mirrors the real adapters: a blank matching value without a
+          # crm_id cannot be reconciled and must fail explicitly.
+          raise ArgumentError,
+                "match_value must be provided when crm_id is unknown"
+        end
+
+        value
       end
 
       def delete!(crm_id:, object_type:)
@@ -18,8 +25,12 @@ module Etlify
       def batch_upsert!(inputs:, object_type:, match_property:)
         inputs.each_with_object({}) do |input, h|
           value = (input[:value] || input["value"]).to_s.strip
-          key = value.empty? ? SecureRandom.uuid : value
-          h[key] = SecureRandom.uuid
+          if value.empty?
+            raise ArgumentError,
+                  "every input must carry a non-blank :value"
+          end
+
+          h[value] = SecureRandom.uuid
         end
       end
 

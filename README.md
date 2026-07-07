@@ -783,7 +783,10 @@ expect(fake_adapter).to have_received(:upsert!).with(
 
 ## Adapters included
 
-- `Etlify::Adapters::NullAdapter` (default; no-op)
+- `Etlify::Adapters::NullAdapter` (default; no-op). It enforces the same
+  contract as the real adapters: a blank `match_value` without a known
+  `crm_id` raises `ArgumentError`, so dev/test surfaces the same `:error`
+  results as production instead of fake-syncing with a generated id.
 - `Etlify::Adapters::HubspotV3Adapter` (API v3, with batch support)
 - `Etlify::Adapters::AirtableV0Adapter` (API v0, with batch support)
 
