@@ -6,7 +6,7 @@ module Etlify
   module Adapters
     # Simple Net::HTTP client used by default (dependency-free).
     # Shared across adapters (Airtable, HubSpot, etc.).
-    # Signature: request(method, url, headers:, body:) → {status:, body:}
+    # Signature: request(method, url, headers:, body:) → {status:, body:, headers:}
     class DefaultHttp
       OPEN_TIMEOUT = 5
       READ_TIMEOUT = 30
@@ -30,7 +30,11 @@ module Etlify
         http_request.body = body if body
 
         response = http.request(http_request)
-        {status: response.code.to_i, body: response.body}
+        {
+          status: response.code.to_i,
+          body: response.body,
+          headers: response.to_hash,
+        }
       end
     end
   end

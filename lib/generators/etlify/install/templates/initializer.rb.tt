@@ -21,6 +21,27 @@ Etlify.configure do |config|
     # will provide DSL below for models
     # another_crm_etlified_with(...)
 
+    # Microsoft Dynamics 365 (Dataverse Web API v9.2)
+    # Note: Dynamics365Adapter does NOT support batch operations
+    # in v1 (batch_upsert! / batch_delete! raise NotImplementedError).
+    # Use Etlify::SyncJob (per-record) rather than BatchSyncJob.
+    # Etlify::CRM.register(
+    #   :dynamics_365,
+    #   adapter: Etlify::Adapters::Dynamics365Adapter.new(
+    #     tenant_id: ENV["DYNAMICS_TENANT_ID"],
+    #     client_id: ENV["DYNAMICS_CLIENT_ID"],
+    #     client_secret: ENV["DYNAMICS_CLIENT_SECRET"],
+    #     resource_uri: ENV["DYNAMICS_RESOURCE_URI"],
+    #   ),
+    #   enabled: Rails.env.production? || Rails.env.staging?,
+    #   options: {
+    #     job_class: Etlify::SyncJob,
+    #     rate_limit: { max_requests: 100, period: 5 },
+    #   }
+    # )
+    # will provide DSL below for models
+    # dynamics_365_etlified_with(...)
+
   # overridable defaults config
   # @digest_strategy = Etlify::Digest.method(:stable_sha256)
   # @job_queue_name  = "low"
