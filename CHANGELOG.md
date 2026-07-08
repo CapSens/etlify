@@ -1,4 +1,4 @@
-# UNRELEASED
+# V0.12.0
 
 This version contains Breaking Changes ⚠️ (please refer to `UPGRADE-GUIDE.md`)
 
