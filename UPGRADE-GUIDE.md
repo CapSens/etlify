@@ -1,4 +1,4 @@
-# UPGRADING FROM 0.11.3 -> UNRELEASED
+# UPGRADING FROM 0.11.3 -> 0.12.0
 
 ## 1. Overview
 
