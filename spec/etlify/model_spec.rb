@@ -98,7 +98,7 @@ RSpec.describe Etlify::Model do
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
-        id_property: :external_id,
+        match_by: {property: :external_id, value: :external_id},
         dependencies: ["company", "owner"],
         sync_dependencies: ["company"],
         sync_if: ->(r) { r.respond_to?(:active?) ? r.active? : true },
@@ -109,7 +109,7 @@ RSpec.describe Etlify::Model do
       expect(conf[:serializer]).to eq(dummy_serializer)
       expect(conf[:guard]).to be_a(Proc)
       expect(conf[:crm_object_type]).to eq(:contact)
-      expect(conf[:id_property]).to eq(:external_id)
+      expect(conf[:match_by]).to eq(property: :external_id, value: :external_id)
       expect(conf[:dependencies]).to eq([:company, :owner])
       expect(conf[:sync_dependencies]).to eq([:company])
       expect(conf[:adapter]).to eq(dummy_adapter)
@@ -123,7 +123,7 @@ RSpec.describe Etlify::Model do
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
-        id_property: :external_id
+        match_by: {property: :external_id, value: :external_id}
       )
 
       conf = klass.etlify_crms[:hubspot]
@@ -137,7 +137,7 @@ RSpec.describe Etlify::Model do
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
-        id_property: :external_id
+        match_by: {property: :external_id, value: :external_id}
       )
 
       conf = klass.etlify_crms[:hubspot]
@@ -154,7 +154,7 @@ RSpec.describe Etlify::Model do
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
-        id_property: :external_id
+        match_by: {property: :external_id, value: :external_id}
       )
 
       expect(klass.etlify_crms.keys).to include(:salesforce, :hubspot)
@@ -168,7 +168,7 @@ RSpec.describe Etlify::Model do
         klass.hubspot_etlified_with(
           serializer: dummy_serializer,
           crm_object_type: :contact,
-          id_property: :external_id
+          match_by: {property: :external_id, value: :external_id}
         )
       end.to raise_error(RuntimeError, "boom")
     end
@@ -181,7 +181,7 @@ RSpec.describe Etlify::Model do
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
-        id_property: :external_id,
+        match_by: {property: :external_id, value: :external_id},
         stale_scope: scope_lambda
       )
 
@@ -196,7 +196,7 @@ RSpec.describe Etlify::Model do
       klass.hubspot_etlified_with(
         serializer: dummy_serializer,
         crm_object_type: :contact,
-        id_property: :external_id
+        match_by: {property: :external_id, value: :external_id}
       )
 
       conf = klass.etlify_crms[:hubspot]
@@ -211,10 +211,82 @@ RSpec.describe Etlify::Model do
         klass.hubspot_etlified_with(
           serializer: dummy_serializer,
           crm_object_type: :contact,
-          id_property: :external_id,
+          match_by: {property: :external_id, value: :external_id},
           stale_scope: "not_a_callable"
         )
       end.to raise_error(ArgumentError, /stale_scope must respond to :call/)
+    end
+
+    it "raises when match_by is not provided" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+
+      expect do
+        klass.hubspot_etlified_with(
+          serializer: dummy_serializer,
+          crm_object_type: :contact
+        )
+      end.to raise_error(ArgumentError, /match_by/)
+    end
+
+    it "raises when match_by is not a Hash" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+
+      expect do
+        klass.hubspot_etlified_with(
+          serializer: dummy_serializer,
+          crm_object_type: :contact,
+          match_by: :external_id
+        )
+      end.to raise_error(ArgumentError, /match_by must be a Hash/)
+    end
+
+    it "raises when match_by[:property] is missing or blank" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+
+      [{value: :id}, {property: "", value: :id}, {property: 42, value: :id}]
+        .each do |match_by|
+        expect do
+          klass.hubspot_etlified_with(
+            serializer: dummy_serializer,
+            crm_object_type: :contact,
+            match_by: match_by
+          )
+        end.to raise_error(ArgumentError, /match_by\[:property\]/)
+      end
+    end
+
+    it "raises when match_by[:value] is neither a Proc nor a Symbol" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+
+      [{property: :email}, {property: :email, value: "email"}]
+        .each do |match_by|
+        expect do
+          klass.hubspot_etlified_with(
+            serializer: dummy_serializer,
+            crm_object_type: :contact,
+            match_by: match_by
+          )
+        end.to raise_error(ArgumentError, /match_by\[:value\]/)
+      end
+    end
+
+    it "accepts a Proc as match_by[:value]" do
+      klass = build_including_class
+      described_class.define_crm_dsl_on(klass, :hubspot)
+
+      resolver = ->(record) { record.external_id }
+      klass.hubspot_etlified_with(
+        serializer: dummy_serializer,
+        crm_object_type: :contact,
+        match_by: {property: :external_id, value: resolver}
+      )
+
+      conf = klass.etlify_crms[:hubspot]
+      expect(conf[:match_by][:value]).to eq(resolver)
     end
   end
 
@@ -313,7 +385,7 @@ RSpec.describe Etlify::Model do
               end,
               guard: ->(_r) { true },
               crm_object_type: :contact,
-              id_property: :external_id,
+              match_by: {property: :external_id, value: :external_id},
               adapter: Class.new,
             },
           }
@@ -342,7 +414,7 @@ RSpec.describe Etlify::Model do
               serializer: serializer,
               guard: ->(_r) { true },
               crm_object_type: :contact,
-              id_property: :external_id,
+              match_by: {property: :external_id, value: :external_id},
               adapter: Class.new,
             },
           }
@@ -368,7 +440,7 @@ RSpec.describe Etlify::Model do
               serializer: BadSerializer,
               guard: ->(_r) { true },
               crm_object_type: :contact,
-              id_property: :external_id,
+              match_by: {property: :external_id, value: :external_id},
               adapter: Class.new,
             },
           }
@@ -402,7 +474,7 @@ RSpec.describe Etlify::Model do
               end,
               guard: ->(_r) { true },
               crm_object_type: :contact,
-              id_property: :external_id,
+              match_by: {property: :external_id, value: :external_id},
               adapter: Class.new,
             },
           }

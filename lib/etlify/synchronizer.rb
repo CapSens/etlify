@@ -62,7 +62,8 @@ module Etlify
         elsif sync_line.stale?(digest)
           crm_id = adapter.upsert!(
             payload: payload,
-            id_property: conf[:id_property],
+            match_property: Etlify::MatchBy.property(conf),
+            match_value: Etlify::MatchBy.resolve(resource, conf),
             object_type: conf[:crm_object_type],
             crm_id: sync_line.crm_id
           )

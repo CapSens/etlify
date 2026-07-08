@@ -54,7 +54,7 @@ RSpec.describe Etlify::Deleter do
         {
           hubspot: {
             adapter: adapter_instance,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
           },
         }

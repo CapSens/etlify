@@ -47,12 +47,12 @@ RSpec.describe Etlify::StaleRecords::Finder do
       end
 
       unless ActiveRecord::Base.connection
-                 .column_exists?(:users, :avatarable_type)
+                               .column_exists?(:users, :avatarable_type)
         add_column :users, :avatarable_type, :string
       end
 
       unless ActiveRecord::Base.connection
-                 .column_exists?(:users, :avatarable_id)
+                               .column_exists?(:users, :avatarable_id)
         add_column :users, :avatarable_id, :integer
       end
 
@@ -175,8 +175,8 @@ RSpec.describe Etlify::StaleRecords::Finder do
       has_many :poly_projects, through: :linkages, source: :project
       has_many :subscriptions, through: :profile
       has_many :follows, class_name: "Follow",
-                       foreign_key: "follower_id",
-                       dependent: :destroy
+                         foreign_key: "follower_id",
+                         dependent: :destroy
       has_many :followees, through: :follows, source: :followee
     end
   end
@@ -209,18 +209,18 @@ RSpec.describe Etlify::StaleRecords::Finder do
       {
         hubspot: {
           adapter: Etlify::Adapters::NullAdapter.new,
-          id_property: "id",
+          match_by: {property: :id, value: :id},
           crm_object_type: "contacts",
           dependencies: [
-            :company, :notes, :profile, :projects, :uploads, :activities
-          ]
+            :company, :notes, :profile, :projects, :uploads, :activities,
+          ],
         },
         salesforce: {
           adapter: Etlify::Adapters::NullAdapter.new,
-          id_property: "Id",
+          match_by: {property: :Id, value: :id},
           crm_object_type: "Lead",
-          dependencies: [:company]
-        }
+          dependencies: [:company],
+        },
       }
     )
   end
@@ -256,10 +256,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
       config = {
         hubspot: {
           adapter: Etlify::Adapters::NullAdapter.new,
-          id_property: "id",
+          match_by: {property: :id, value: :id},
           crm_object_type: "deals",
-          dependencies: []
-        }
+          dependencies: [],
+        },
       }
       allow(Subscription).to receive(:etlify_crms).and_return(config)
       allow(sti_sub).to receive(:etlify_crms).and_return(config)
@@ -278,10 +278,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
       config = {
         hubspot: {
           adapter: Etlify::Adapters::NullAdapter.new,
-          id_property: "id",
+          match_by: {property: :id, value: :id},
           crm_object_type: "deals",
-          dependencies: []
-        }
+          dependencies: [],
+        },
       }
       allow(sti_sub).to receive(:etlify_crms).and_return(config)
 
@@ -394,10 +394,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: []
-          }
+            dependencies: [],
+          },
         }
       )
       user = User.create!(email: "x@x.x", updated_at: now)
@@ -468,10 +468,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: [:activities]
-          }
+            dependencies: [:activities],
+          },
         }
       )
       create_sync!(user, crm: :hubspot, last_synced_at: now + 1)
@@ -492,10 +492,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: [:activities]
-          }
+            dependencies: [:activities],
+          },
         }
       )
       create_sync!(user, crm: :hubspot, last_synced_at: now + 5)
@@ -507,10 +507,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: [:poly_projects]
-          }
+            dependencies: [:poly_projects],
+          },
         }
       )
 
@@ -531,10 +531,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
           {
             hubspot: {
               adapter: Etlify::Adapters::NullAdapter.new,
-              id_property: "id",
+              match_by: {property: :id, value: :id},
               crm_object_type: "contacts",
-              dependencies: [:subscriptions]
-            }
+              dependencies: [:subscriptions],
+            },
           }
         )
 
@@ -562,10 +562,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         allow(Subscription).to receive(:etlify_crms).and_return({
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "subscriptions",
-            dependencies: [:subscription_user]
-          }
+            dependencies: [:subscription_user],
+          },
         })
 
         user = User.create!(email: "bt@x.x", updated_at: now)
@@ -583,10 +583,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         allow(Subscription).to receive(:etlify_crms).and_return({
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "subscriptions",
-            dependencies: [:upload_owner_user]
-          }
+            dependencies: [:upload_owner_user],
+          },
         })
 
         user = User.create!(email: "ps@x.x", updated_at: now)
@@ -610,10 +610,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: [:avatarable]
-          }
+            dependencies: [:avatarable],
+          },
         }
       )
 
@@ -637,10 +637,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: [:avatarable]
-          }
+            dependencies: [:avatarable],
+          },
         }
       )
       user = User.create!(email: "q@x.x")
@@ -657,10 +657,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: [:tags]
-          }
+            dependencies: [:tags],
+          },
         }
       )
       user = User.create!(email: "habtm@x.x", updated_at: now)
@@ -684,11 +684,11 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
             # The dependency below triggers a users->users self-join
-            dependencies: [:followees]
-          }
+            dependencies: [:followees],
+          },
         }
       )
 
@@ -745,41 +745,41 @@ RSpec.describe Etlify::StaleRecords::Finder do
 
       Object.send(:remove_const, "SuitabilityQuestionnaire") \
         if Object.const_defined?("SuitabilityQuestionnaire")
-      class SuitabilityQuestionnaire < ApplicationRecord
+      class SuitabilityQuestionnaire < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
         self.table_name = "capsens_suitability_questionnaire_questionnaires"
       end
 
       Object.send(:remove_const, "ProfilesSuitabilityQuestionnaire") \
         if Object.const_defined?("ProfilesSuitabilityQuestionnaire")
-      class ProfilesSuitabilityQuestionnaire < ApplicationRecord
+      class ProfilesSuitabilityQuestionnaire < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
         self.table_name = "users_profiles_suitability_questionnaires"
 
         belongs_to :profile,
-                  class_name: "Profile",
-                  foreign_key: "users_profile_id",
-                  optional: false
+                   class_name: "Profile",
+                   foreign_key: "users_profile_id",
+                   optional: false
         belongs_to :suitability_questionnaire,
-                  class_name: "SuitabilityQuestionnaire",
-                  optional: false
+                   class_name: "SuitabilityQuestionnaire",
+                   optional: false
       end
 
       # === Missing associations on Profile / User =========================
 
       Profile.class_eval do
         has_many :profiles_suitability_questionnaires,
-                class_name: "ProfilesSuitabilityQuestionnaire",
-                foreign_key: "users_profile_id",
-                dependent: :destroy
+                 class_name: "ProfilesSuitabilityQuestionnaire",
+                 foreign_key: "users_profile_id",
+                 dependent: :destroy
 
         has_many :suitability_questionnaires,
-                through: :profiles_suitability_questionnaires,
-                source: :suitability_questionnaire
+                 through: :profiles_suitability_questionnaires,
+                 source: :suitability_questionnaire
       end
 
       User.class_eval do
         has_many :suitability_questionnaires,
-                through: :profile,
-                source: :suitability_questionnaires
+                 through: :profile,
+                 source: :suitability_questionnaires
       end
     end
 
@@ -788,10 +788,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: [:suitability_questionnaires]
-          }
+            dependencies: [:suitability_questionnaires],
+          },
         }
       )
 
@@ -845,10 +845,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: [:notes, :profile]
-          }
+            dependencies: [:notes, :profile],
+          },
         }
       )
       relation = described_class.call(crm_name: :hubspot)[User][:hubspot]
@@ -887,16 +887,16 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
-            dependencies: [:notes]
+            dependencies: [:notes],
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "Id",
+            match_by: {property: :Id, value: :id},
             crm_object_type: "Lead",
-            dependencies: [:company]
-          }
+            dependencies: [:company],
+          },
         }
       )
       user = User.create!(email: "b@x.x")
@@ -916,7 +916,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
   describe "empty and absent CRM cases" do
     it "omits models not configured for targeted crm_name" do
       allow(User).to receive(:etlify_crms).and_return(
-        { hubspot: User.etlify_crms[:hubspot] }
+        {hubspot: User.etlify_crms[:hubspot]}
       )
       results = described_class.call(crm_name: :salesforce)
       expect(results).to eq({})
@@ -955,7 +955,7 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: User.etlify_crms[:hubspot].merge(
             dependencies: [:does_not_exist]
-          )
+          ),
         }
       )
       user = User.create!(email: "u@x.x", updated_at: now)
@@ -996,10 +996,10 @@ RSpec.describe Etlify::StaleRecords::Finder do
           {
             hubspot: {
               adapter: Etlify::Adapters::NullAdapter.new,
-              id_property: "id",
+              match_by: {property: :id, value: :id},
               crm_object_type: "contacts",
-              dependencies: []
-            }
+              dependencies: [],
+            },
           }
         end
       end
@@ -1084,11 +1084,11 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
             dependencies: [],
-            stale_scope: -> { where("email LIKE ?", "%market%") }
-          }
+            stale_scope: -> { where("email LIKE ?", "%market%") },
+          },
         }
       )
 
@@ -1105,11 +1105,11 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
             dependencies: [],
-            stale_scope: nil
-          }
+            stale_scope: nil,
+          },
         }
       )
 
@@ -1125,11 +1125,11 @@ RSpec.describe Etlify::StaleRecords::Finder do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "id",
+            match_by: {property: :id, value: :id},
             crm_object_type: "contacts",
             dependencies: [],
-            stale_scope: -> { where("email LIKE ?", "%market%") }
-          }
+            stale_scope: -> { where("email LIKE ?", "%market%") },
+          },
         }
       )
 

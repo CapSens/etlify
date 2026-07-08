@@ -149,7 +149,9 @@ class User < ApplicationRecord
   hubspot_etlified_with(
     serializer: UserSerializer,
     crm_object_type: "contacts",
-    id_property: :id,
+    # How to find the record on the CRM side: a unique CRM property and how
+    # to resolve its value from the record (method symbol or proc).
+    match_by: {property: :email, value: :email},
     # Only sync when an email exists
     sync_if: ->(user) { user.email.present? },
     # useful if your object serialization includes dependencies
@@ -159,6 +161,32 @@ class User < ApplicationRecord
   )
 end
 ```
+
+#### Matching vs payload: `match_by`
+
+`match_by` fully decouples **matching** (how Etlify finds the CRM record)
+from the **payload** (what the serializer syncs):
+
+- `property`: the unique CRM property used to match (e.g. `:email` for
+  HubSpot contacts, a merge field for Airtable).
+- `value`: how to resolve the value from the record — a method name Symbol
+  (`value: :email`) or a Proc (`value: ->(user) { user.email }`).
+
+The serializer payload is synced **as-is**. The matching property is only
+written at **creation** time (when the payload does not already include it).
+It is **never** written on an existing record unless the serializer
+explicitly includes it in the payload. This gives you the choice:
+
+- Keep the property in the serializer → it is synced like any other field.
+- Leave it out of the serializer → it is only used to match, and only set
+  at creation. For HubSpot contacts matched by email, this prevents
+  overwriting a contact's primary email when the platform email is one of
+  its secondary emails (`hs_additional_emails`).
+
+Once a record has a `crm_id`, updates go through it directly and the
+matching value is not needed anymore (it may resolve blank). When a record
+has **no** `crm_id` yet and its matching value resolves blank, the sync
+fails explicitly (`:error` + `error_count` bump) instead of guessing.
 
 #### Restricting the Finder scope with `stale_scope`
 
@@ -175,7 +203,7 @@ class Trading::Operation < ApplicationRecord
   hubspot_etlified_with(
     serializer: TradingOperationSerializer,
     crm_object_type: "deals",
-    id_property: :id,
+    match_by: {property: :id, value: :id},
     sync_if: ->(op) { op.marketplace? },
     stale_scope: -> { marketplace }
   )
@@ -234,7 +262,7 @@ class Trading::Operation < ApplicationRecord
   airtable_etlified_with(
     serializer: TradingOperationSerializer,
     crm_object_type: "deals",
-    id_property: :id,
+    match_by: {property: :id, value: :id},
     sync_dependencies: [:buyer_profile]
   )
 end
@@ -490,8 +518,10 @@ end
 ### Behaviour
 
 - `object_type`: the target entity, e.g. `"contacts"`, `"companies"`, `"deals"`, or the API name of a custom object.
-- `id_property` (mandatory): if your upsert should search for an existing record by a unique property (e.g. `"email"` for contacts), the adapter uses it to find-or-create.
-- If no match is found (or no `id_property` is provided), the adapter **creates** a new record.
+- `match_property` / `match_value` (mandatory): the unique property and value used to find an existing record (e.g. `"email"` for contacts). For contacts matched by email, the search also covers secondary emails (`hs_additional_emails`).
+- If no match is found, the adapter **creates** a new record, setting `match_property` from `match_value` when the payload does not already carry it.
+- The payload is synced **as-is**: the matching property is never written on an existing record unless the payload explicitly includes it (this prevents overwriting a contact's primary email when matched through a secondary email).
+- `crm_id`: if known, the search is skipped entirely and the record is updated directly.
 
 ### Example: Contact upsert
 
@@ -502,7 +532,7 @@ class User < ApplicationRecord
   hubspot_etlified_with(
     serializer: UserSerializer,
     crm_object_type: "contacts",
-    id_property: :email,
+    match_by: {property: :email, value: :email},
     sync_if: ->(user) { user.email.present? }
   )
 end
@@ -519,8 +549,8 @@ class Subscription < ApplicationRecord
 
   hubspot_etlified_with(
     serializer: SubscriptionSerializer,
-    crm_object_type: "p1234567_subscription" # Custom object API name,
-    id_propery: :id,
+    crm_object_type: "p1234567_subscription", # Custom object API name
+    match_by: {property: :id, value: :id}
   )
 end
 ```
@@ -533,14 +563,14 @@ The HubSpot adapter provides two additional methods for bulk operations, using H
 adapter = Etlify::CRM.registry[:hubspot].adapter
 
 # Batch upsert via HubSpot's native /batch/upsert
-# Returns an Array of hs_object_id strings
+# Returns a Hash {input value => hs_object_id}
 adapter.batch_upsert!(
   object_type: "contacts",
-  records: [
-    {email: "a@example.com", firstname: "Alice"},
-    {email: "b@example.com", firstname: "Bob"},
+  inputs: [
+    {value: "a@example.com", properties: {firstname: "Alice"}},
+    {value: "b@example.com", properties: {firstname: "Bob"}},
   ],
-  id_property: "email"
+  match_property: "email"
 )
 
 # Batch delete (archive) via /batch/archive
@@ -579,7 +609,7 @@ end
 ### Behaviour
 
 - `object_type`: the Airtable table ID or name (e.g. `"tblContacts"`, `"Contacts"`).
-- `id_property`: field name used to search for existing records via `filterByFormula`. If a match is found, the record is updated; otherwise a new record is created.
+- `match_property` / `match_value` (mandatory): field name and value used to search for existing records via `filterByFormula`. If a match is found, the record is updated with the payload as-is; otherwise a new record is created with the match field injected when the payload does not carry it.
 - `crm_id`: if provided (e.g. `"recXXXXXXXX"`), the adapter skips the search and updates the record directly.
 
 ### Example: Contact upsert
@@ -591,7 +621,7 @@ class User < ApplicationRecord
   airtable_etlified_with(
     serializer: UserSerializer,
     crm_object_type: "tblContacts",
-    id_property: :Email,
+    match_by: {property: :Email, value: :email},
     sync_if: ->(user) { user.email.present? }
   )
 end
@@ -608,14 +638,14 @@ The Airtable adapter provides two additional methods for bulk operations, using 
 adapter = Etlify::CRM.registry[:airtable].adapter
 
 # Batch upsert via Airtable's native performUpsert
-# Returns a Hash { id_property_value => record_id }
+# Returns a Hash {input value => record_id}
 adapter.batch_upsert!(
   object_type: "tblContacts",
-  records: [
-    {Email: "a@example.com", Name: "Alice"},
-    {Email: "b@example.com", Name: "Bob"},
+  inputs: [
+    {value: "a@example.com", properties: {Name: "Alice"}},
+    {value: "b@example.com", properties: {Name: "Bob"}},
   ],
-  id_property: "Email"
+  match_property: "Email"
 )
 
 # Batch delete
@@ -637,8 +667,14 @@ Implement the following interface:
 module Etlify
   module Adapters
     class MyCrmAdapter
-      # Must return the remote CRM ID as a String
-      def upsert!(object_type:, payload:, id_property: nil, crm_id: nil)
+      # Must return the remote CRM ID as a String.
+      # Contract:
+      # - When crm_id is provided, update directly (no search).
+      # - Otherwise, find the record through match_property/match_value.
+      # - Sync the payload as-is: never write match_property on an existing
+      #   record unless the payload includes it; only set it at creation
+      #   when the payload does not carry it.
+      def upsert!(object_type:, payload:, match_property:, match_value:, crm_id: nil)
         # Call your CRM API to create or update
         # Return the CRM id (e.g. "12345")
       end
@@ -648,6 +684,18 @@ module Etlify
         # Call your CRM API to delete the record
         # Return true when the remote says it has been removed
       end
+
+      # Optional, enables the batch path of BatchSyncJob for first-time
+      # syncs. inputs is an Array of {value:, properties:} hashes; must
+      # return a Hash mapping each input's value (as provided) to the CRM id.
+      # def batch_upsert!(object_type:, inputs:, match_property:)
+      # end
+
+      # Optional, enables the batch path for records that already have a
+      # crm_id. records is an Array of {crm_id:, properties:} hashes; must
+      # return an identity Hash {crm_id => crm_id}.
+      # def batch_update!(object_type:, records:)
+      # end
     end
   end
 end
@@ -724,7 +772,8 @@ user.hubspot_sync!(async: false)
 expect(fake_adapter).to have_received(:upsert!).with(
   object_type: "contacts",
   payload: hash_including(email: "someone@example.com"),
-  id_property: anything,
+  match_property: anything,
+  match_value: anything,
   crm_id: nil
 )
 
@@ -734,7 +783,10 @@ expect(fake_adapter).to have_received(:upsert!).with(
 
 ## Adapters included
 
-- `Etlify::Adapters::NullAdapter` (default; no-op)
+- `Etlify::Adapters::NullAdapter` (default; no-op). It enforces the same
+  contract as the real adapters: a blank `match_value` without a known
+  `crm_id` raises `ArgumentError`, so dev/test surfaces the same `:error`
+  results as production instead of fake-syncing with a generated id.
 - `Etlify::Adapters::HubspotV3Adapter` (API v3, with batch support)
 - `Etlify::Adapters::AirtableV0Adapter` (API v0, with batch support)
 

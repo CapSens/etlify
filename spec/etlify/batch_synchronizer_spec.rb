@@ -17,7 +17,7 @@ RSpec.describe Etlify::BatchSynchronizer do
       {
         hubspot: {
           adapter: adapter,
-          id_property: "email",
+          match_by: {property: :email, value: :email},
           crm_object_type: "contacts",
           guard: nil,
           sync_dependencies: [],
@@ -47,17 +47,23 @@ RSpec.describe Etlify::BatchSynchronizer do
       end
     end
 
-    it "calls adapter.batch_upsert! with all payloads" do
+    it "calls adapter.batch_upsert! with resolved values and payloads" do
       user1 = create_user!(index: 1)
       user2 = create_user!(index: 2)
 
       expect(adapter).to receive(:batch_upsert!).with(
         object_type: "contacts",
-        records: [
-          hash_including(email: "user1@example.com"),
-          hash_including(email: "user2@example.com"),
+        inputs: [
+          {
+            value: "user1@example.com",
+            properties: hash_including(email: "user1@example.com"),
+          },
+          {
+            value: "user2@example.com",
+            properties: hash_including(email: "user2@example.com"),
+          },
         ],
-        id_property: "email"
+        match_property: "email"
       ).and_call_original
 
       described_class.call([user1, user2], crm_name: :hubspot)
@@ -68,7 +74,7 @@ RSpec.describe Etlify::BatchSynchronizer do
         {
           hubspot: {
             adapter: adapter,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
             guard: ->(u) { u.email != "user2@example.com" },
             sync_dependencies: [],
@@ -103,7 +109,7 @@ RSpec.describe Etlify::BatchSynchronizer do
         {
           hubspot: {
             adapter: adapter,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
             guard: ->(_u) { false },
             sync_dependencies: [],
@@ -118,6 +124,169 @@ RSpec.describe Etlify::BatchSynchronizer do
 
       expect(stats[:skipped]).to eq(1)
       expect(stats[:synced]).to eq(0)
+    end
+
+    context "match_by resolution" do
+      it "fails records with a blank value and no crm_id without blocking " \
+         "the rest of the batch", :aggregate_failures do
+        allow(User).to receive(:etlify_crms).and_return(
+          {
+            hubspot: {
+              adapter: adapter,
+              match_by: {
+                property: :email,
+                value: ->(u) { (u.email == "user2@example.com") ? nil : u.email },
+              },
+              crm_object_type: "contacts",
+              guard: nil,
+              sync_dependencies: [],
+            },
+          }
+        )
+
+        user1 = create_user!(index: 1)
+        user2 = create_user!(index: 2)
+
+        stats = described_class.call([user1, user2], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(1)
+        expect(stats[:errors]).to eq(1)
+
+        line2 = CrmSynchronisation.find_by(resource: user2, crm_name: "hubspot")
+        expect(line2.crm_id).to be_nil
+        expect(line2.error_count).to eq(1)
+        expect(line2.last_error).to include("resolved blank")
+      end
+
+      it "still batch-updates by crm_id when the resolved value is blank",
+         :aggregate_failures do
+        allow(User).to receive(:etlify_crms).and_return(
+          {
+            hubspot: {
+              adapter: adapter,
+              match_by: {property: :email, value: ->(_u) {}},
+              crm_object_type: "contacts",
+              guard: nil,
+              sync_dependencies: [],
+            },
+          }
+        )
+
+        user = create_user!(index: 1)
+        CrmSynchronisation.create!(
+          resource: user,
+          crm_name: "hubspot",
+          crm_id: "rec_1",
+          last_digest: "stale-digest"
+        )
+
+        stats = described_class.call([user], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(1)
+        expect(stats[:errors]).to eq(0)
+      end
+
+      it "isolates records whose match_by value proc raises",
+         :aggregate_failures do
+        allow(User).to receive(:etlify_crms).and_return(
+          {
+            hubspot: {
+              adapter: adapter,
+              match_by: {
+                property: :email,
+                value: lambda do |u|
+                  raise "broken resolver" if u.email == "user1@example.com"
+
+                  u.email
+                end,
+              },
+              crm_object_type: "contacts",
+              guard: nil,
+              sync_dependencies: [],
+            },
+          }
+        )
+
+        user1 = create_user!(index: 1)
+        user2 = create_user!(index: 2)
+
+        stats = described_class.call([user1, user2], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(1)
+        expect(stats[:errors]).to eq(1)
+
+        line1 = CrmSynchronisation.find_by(resource: user1, crm_name: "hubspot")
+        expect(line1.error_count).to eq(1)
+        expect(line1.last_error).to include("broken resolver")
+      end
+
+      it "never runs the resolver on not_modified records",
+         :aggregate_failures do
+        user = create_user!(index: 1)
+        described_class.call([user], crm_name: :hubspot)
+
+        allow(User).to receive(:etlify_crms).and_return(
+          {
+            hubspot: {
+              adapter: adapter,
+              match_by: {
+                property: :email,
+                value: ->(_u) { raise "broken resolver" },
+              },
+              crm_object_type: "contacts",
+              guard: nil,
+              sync_dependencies: [],
+            },
+          }
+        )
+
+        stats = described_class.call([user], crm_name: :hubspot)
+
+        expect(stats[:not_modified]).to eq(1)
+        expect(stats[:errors]).to eq(0)
+
+        line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+        expect(line.error_count).to eq(0)
+        expect(line.last_error).to be_nil
+      end
+
+      # Documents the current asymmetry: a blank value is tolerated when a
+      # crm_id is known (update by id), a raising resolver is not, because
+      # resolution happens before the crm_id partition.
+      it "fails records whose resolver raises even when a crm_id is known",
+         :aggregate_failures do
+        allow(User).to receive(:etlify_crms).and_return(
+          {
+            hubspot: {
+              adapter: adapter,
+              match_by: {
+                property: :email,
+                value: ->(_u) { raise "broken resolver" },
+              },
+              crm_object_type: "contacts",
+              guard: nil,
+              sync_dependencies: [],
+            },
+          }
+        )
+
+        user = create_user!(index: 1)
+        CrmSynchronisation.create!(
+          resource: user,
+          crm_name: "hubspot",
+          crm_id: "rec_1",
+          last_digest: "stale-digest"
+        )
+
+        stats = described_class.call([user], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(0)
+        expect(stats[:errors]).to eq(1)
+
+        line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+        expect(line.error_count).to eq(1)
+        expect(line.last_error).to include("broken resolver")
+      end
     end
 
     context "when adapter.batch_upsert! raises ValidationFailed" do
@@ -160,6 +329,51 @@ RSpec.describe Etlify::BatchSynchronizer do
 
         expect(line3.crm_id).to eq("rec_user3@example.com")
         expect(line3.error_count).to eq(0)
+      end
+    end
+
+    context "when batch_upsert! mapping omits a record" do
+      it "marks the omitted record :error and keeps it stale",
+         :aggregate_failures do
+        user1 = create_user!(index: 1)
+        user2 = create_user!(index: 2)
+
+        # The CRM answered but the mapping lacks user2 (e.g. the response
+        # does not echo the match property back).
+        allow(adapter).to receive(:batch_upsert!)
+          .and_return("user1@example.com" => "rec_1")
+
+        stats = described_class.call([user1, user2], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(1)
+        expect(stats[:errors]).to eq(1)
+
+        line1 = CrmSynchronisation.find_by(resource: user1, crm_name: "hubspot")
+        expect(line1.crm_id).to eq("rec_1")
+        expect(line1.error_count).to eq(0)
+
+        line2 = CrmSynchronisation.find_by(resource: user2, crm_name: "hubspot")
+        expect(line2.crm_id).to be_nil
+        expect(line2.last_digest).to be_nil
+        expect(line2.error_count).to eq(1)
+        expect(line2.last_error).to include("no crm_id")
+      end
+
+      it "marks every record :error when the mapping is empty",
+         :aggregate_failures do
+        user = create_user!(index: 1)
+
+        allow(adapter).to receive(:batch_upsert!).and_return({})
+
+        stats = described_class.call([user], crm_name: :hubspot)
+
+        expect(stats[:synced]).to eq(0)
+        expect(stats[:errors]).to eq(1)
+
+        line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+        expect(line.crm_id).to be_nil
+        expect(line.last_digest).to be_nil
+        expect(line.error_count).to eq(1)
       end
     end
 
@@ -289,8 +503,13 @@ RSpec.describe Etlify::BatchSynchronizer do
       ).and_call_original
       expect(adapter).to receive(:batch_upsert!).with(
         object_type: "contacts",
-        records: [hash_including(email: "user2@example.com")],
-        id_property: "email"
+        inputs: [
+          {
+            value: "user2@example.com",
+            properties: hash_including(email: "user2@example.com"),
+          },
+        ],
+        match_property: "email"
       ).and_call_original
 
       stats = described_class.call([existing, fresh], crm_name: :hubspot)
@@ -357,7 +576,8 @@ RSpec.describe Etlify::BatchSynchronizer do
   end
 
   describe "sequential fallback trigger scope" do
-    it "falls back on a 400 ApiError (HubSpot unique-property collision)" do
+    it "falls back on a 400 ApiError (HubSpot unique-property collision)",
+       :aggregate_failures do
       user = create_user!(index: 1)
       allow(adapter).to receive(:batch_upsert!)
         .and_raise(Etlify::ApiError.new("collision", status: 400))
@@ -365,6 +585,12 @@ RSpec.describe Etlify::BatchSynchronizer do
 
       stats = described_class.call([user], crm_name: :hubspot)
       expect(stats[:synced]).to eq(1)
+      expect(adapter).to have_received(:upsert!).with(
+        hash_including(
+          match_property: "email",
+          match_value: "user1@example.com"
+        )
+      )
     end
 
     it "does not fall back on RateLimited (bubbles up)", :aggregate_failures do

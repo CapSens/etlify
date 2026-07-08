@@ -77,7 +77,7 @@ RSpec.describe Etlify::BatchSyncJob do
         {
           minimal_crm: {
             adapter: minimal_adapter,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -143,7 +143,7 @@ RSpec.describe Etlify::BatchSyncJob do
         {
           seq_crm: {
             adapter: minimal_adapter,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -180,7 +180,7 @@ RSpec.describe Etlify::BatchSyncJob do
         {
           error_crm: {
             adapter: minimal_adapter,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }

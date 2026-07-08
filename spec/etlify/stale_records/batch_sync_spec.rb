@@ -37,12 +37,12 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -79,12 +79,12 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -116,12 +116,12 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -155,7 +155,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -198,7 +198,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -254,12 +254,12 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -305,7 +305,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           custom_crm: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -332,7 +332,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           default_job_crm: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -357,7 +357,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
             guard: ->(record) { record.email != "user2@example.com" },
           },
@@ -388,7 +388,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
             guard: ->(_record) { true },
           },
@@ -412,7 +412,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       crm_config = {
         hubspot: {
           adapter: Etlify::Adapters::NullAdapter.new,
-          id_property: "email",
+          match_by: {property: :email, value: :email},
           crm_object_type: "contacts",
         },
       }
@@ -446,12 +446,12 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
         {
           hubspot: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
           salesforce: {
             adapter: Etlify::Adapters::NullAdapter.new,
-            id_property: "email",
+            match_by: {property: :email, value: :email},
             crm_object_type: "contacts",
           },
         }
@@ -481,12 +481,12 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       {
         hubspot: {
           adapter: Etlify::Adapters::NullAdapter.new,
-          id_property: "email",
+          match_by: {property: :email, value: :email},
           crm_object_type: "contacts",
         },
         salesforce: {
           adapter: Etlify::Adapters::NullAdapter.new,
-          id_property: "email",
+          match_by: {property: :email, value: :email},
           crm_object_type: "contacts",
         },
       }
@@ -539,12 +539,12 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       crm_config = {
         hubspot: {
           adapter: Etlify::Adapters::NullAdapter.new,
-          id_property: "email",
+          match_by: {property: :email, value: :email},
           crm_object_type: "contacts",
         },
         salesforce: {
           adapter: Etlify::Adapters::NullAdapter.new,
-          id_property: "email",
+          match_by: {property: :email, value: :email},
           crm_object_type: "contacts",
         },
       }
