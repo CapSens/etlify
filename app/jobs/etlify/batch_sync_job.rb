@@ -31,8 +31,13 @@ module Etlify
     around_perform do |job, block|
       block.call
     ensure
-      cache = Etlify.config.cache_store
-      cache.delete(batch_lock_key(job.arguments))
+      # When reenqueue transferred the lock to the retried job (same key
+      # for identical pairs), deleting it here would leave the retry
+      # without dedup during its wait window.
+      unless @lock_released
+        cache = Etlify.config.cache_store
+        cache.delete(batch_lock_key(job.arguments))
+      end
     end
 
     # @param crm_name [String]
@@ -139,9 +144,11 @@ module Etlify
     def reenqueue(crm_name, remaining_pairs, wait:)
       cache = Etlify.config.cache_store
       # Clear the current job's lock so a re-enqueue with overlapping or
-      # identical pairs can acquire its own lock (the around_perform ensure
-      # would otherwise only run after this method returns).
+      # identical pairs can acquire its own lock, and mark it released so
+      # the around_perform ensure does not delete the lock the re-enqueued
+      # job may have just re-acquired under the same key.
       cache.delete(batch_lock_key(arguments))
+      @lock_released = true
 
       flat = remaining_pairs.flatten
       self.class.set(wait: wait.seconds)

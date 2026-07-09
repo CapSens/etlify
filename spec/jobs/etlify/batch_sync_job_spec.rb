@@ -116,6 +116,32 @@ RSpec.describe Etlify::BatchSyncJob do
       expect(jobs.first[:args][0]).to eq("hubspot")
     end
 
+    it "keeps the re-enqueued job's lock alive when pairs are identical",
+       :aggregate_failures do
+      user1 = create_user!(index: 1)
+      pairs = ["User", user1.id]
+
+      allow_any_instance_of(Etlify::Adapters::NullAdapter)
+        .to receive(:batch_upsert!)
+        .and_raise(Etlify::RateLimited.new("rate limited", status: 429))
+
+      described_class.perform_later("hubspot", pairs)
+      expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(true)
+
+      # Performs the original job only: the retry is scheduled with a
+      # wait (:at) and stays in the queue.
+      aj_perform_enqueued_jobs
+
+      retry_jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(retry_jobs.size).to eq(1)
+      expect(retry_jobs.first[:at]).to be_present
+      expect(retry_jobs.first[:args][1]).to eq(pairs)
+
+      # The retried job holds the lock for its own (identical) pairs: an
+      # identical enqueue during the wait window must still be deduplicated.
+      expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(true)
+    end
+
     it "re-enqueues remaining pairs when batch fails mid-way" do
       user1 = create_user!(index: 1)
       user2 = create_user!(index: 2)
