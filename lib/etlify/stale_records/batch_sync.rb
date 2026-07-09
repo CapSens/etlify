@@ -50,7 +50,7 @@ module Etlify
       private
 
       def call_async
-        stats = {total: 0, per_model: {}, errors: 0}
+        stats = {total: 0, per_model: {}, errors: 0, skipped_chunks: 0}
         pending_pairs = Hash.new { |h, k| h[k] = [] }
 
         stale_results.each do |model, per_crm|
@@ -68,7 +68,7 @@ module Etlify
           stats[:total] += model_count
         end
 
-        enqueue_batch_jobs(pending_pairs)
+        stats[:skipped_chunks] = enqueue_batch_jobs(pending_pairs)
         stats
       end
 
@@ -123,16 +123,25 @@ module Etlify
       # Enqueue one BatchSyncJob per CRM and per batch_size slice of pairs.
       # Splitting bounds the blast radius of a failure to a single chunk
       # instead of the full stale population.
+      # Returns the number of chunks dropped by the job's enqueue-time
+      # dedup lock (perform_later returns false when a callback aborts the
+      # enqueue): stats[:total] counts what was discovered, not what was
+      # actually enqueued.
       def enqueue_batch_jobs(pending_pairs)
+        skipped = 0
+
         pending_pairs.each do |crm, pairs|
           next if pairs.empty?
 
           job_class = job_class_for(crm)
 
           pairs.each_slice(@batch_size) do |chunk|
-            job_class.perform_later(crm.to_s, chunk.flatten)
+            enqueued = job_class.perform_later(crm.to_s, chunk.flatten)
+            skipped += 1 if enqueued == false
           end
         end
+
+        skipped
       end
 
       # Returns the job class to use for enqueuing batch sync jobs.

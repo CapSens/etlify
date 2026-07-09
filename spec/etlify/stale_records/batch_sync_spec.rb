@@ -218,6 +218,40 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       )
     end
 
+    it "counts chunks dropped by the enqueue-time dedup lock",
+       :aggregate_failures do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :email, value: :email},
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      user1 = create_user!(index: 1)
+      user2 = create_user!(index: 2)
+      user3 = create_user!(index: 3)
+
+      # Pre-hold the lock of the first chunk (2 pairs) so its enqueue is
+      # deduplicated; the second chunk (1 pair) goes through.
+      held_pairs = ["User", user1.id, "User", user2.id]
+      Etlify.config.cache_store.write(
+        Etlify::BatchSyncJob.lock_key("hubspot", held_pairs),
+        "1"
+      )
+
+      stats = described_class.call(async: true, batch_size: 2)
+
+      expect(stats[:total]).to eq(3)
+      expect(stats[:skipped_chunks]).to eq(1)
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == Etlify::BatchSyncJob }
+      expect(jobs.size).to eq(1)
+      expect(jobs.first[:args][1]).to eq(["User", user3.id])
+    end
+
     it "returns zeros when there is nothing to sync" do
       allow(User).to receive(:etlify_crms).and_return({})
 

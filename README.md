@@ -408,7 +408,9 @@ The method returns a stats Hash:
     enqueues **one `BatchSyncJob` per CRM and per `batch_size` slice** of
     pairs. Each job processes its own slice, respecting the configured rate
     limit, so a failure (e.g. a `Net::ReadTimeout`) is bounded to one slice
-    instead of the full stale population;
+    instead of the full stale population. `stats[:total]` counts what was
+    discovered; chunks dropped by the enqueue-time dedup lock are reported
+    in `stats[:skipped_chunks]`;
   - in **async: false** mode: load each record and pass it to
     `Etlify::Synchronizer.call(record)` **inline**
     (errors are logged and counted without interrupting the batch).
