@@ -1,8 +1,9 @@
 module Etlify
   module StaleRecords
     # BatchSync: enqueue or perform sync for all stale records discovered by
-    # Finder. In async mode it enqueues a single BatchSyncJob per CRM;
-    # in sync mode it loads records and syncs inline.
+    # Finder. In async mode it enqueues one BatchSyncJob per CRM and per
+    # batch_size slice of pairs; in sync mode it loads records and syncs
+    # inline.
     class BatchSync
       DEFAULT_BATCH_SIZE = 1_000
 

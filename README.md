@@ -358,7 +358,7 @@ Beyond single-record sync, Etlify provides a **batch resynchronisation API** tha
 ### API
 
 ```ruby
-# Enqueue (default): one BatchSyncJob per CRM
+# Enqueue (default): one BatchSyncJob per CRM and per batch_size slice
 Etlify::StaleRecords::BatchSync.call
 
 # Restrict to specific models
@@ -405,8 +405,10 @@ The method returns a stats Hash:
       and polymorphic `belongs_to`).
 - `Etlify::StaleRecords::BatchSync` then iterates **by ID batches**:
   - in **async: true** mode (default): collects all stale record IDs and
-    enqueues a **single `BatchSyncJob` per CRM** with all the pairs. The job
-    processes records sequentially, respecting the configured rate limit;
+    enqueues **one `BatchSyncJob` per CRM and per `batch_size` slice** of
+    pairs. Each job processes its own slice, respecting the configured rate
+    limit, so a failure (e.g. a `Net::ReadTimeout`) is bounded to one slice
+    instead of the full stale population;
   - in **async: false** mode: load each record and pass it to
     `Etlify::Synchronizer.call(record)` **inline**
     (errors are logged and counted without interrupting the batch).
@@ -444,7 +446,7 @@ When `rate_limit` is not configured, no throttling is applied (current behaviour
 2. Every HTTP request in the adapter calls `rate_limiter.throttle!`, which sleeps the minimum necessary time to stay within the rate limit.
 3. **All sync paths are throttled**: `BatchSyncJob`, individual `SyncJob`, inline `crm_sync!(async: false)`, and pending sync flushes — they all go through the same adapter.
 4. If the CRM returns a **429 (Rate Limited)** response despite throttling, `BatchSyncJob` re-enqueues itself with the **remaining records** after a backoff delay (default: 10 seconds).
-5. A cache-based lock ensures only **one `BatchSyncJob` runs per CRM** at a time.
+5. A cache-based lock deduplicates `BatchSyncJob` enqueues: **discovery** runs (no explicit pairs, e.g. cron-triggered) are limited to **one per CRM** at a time, while **chunk** jobs (explicit pairs) are locked **per content** — independent chunks for the same CRM run in parallel, but identical enqueues (including `RateLimited` re-enqueues) are deduplicated. The dedup requires a cache store shared across processes (e.g. Redis or Memcached): with a per-process `MemoryStore`, jobs enqueued from different processes are not deduplicated.
 
 #### Custom adapter support
 
