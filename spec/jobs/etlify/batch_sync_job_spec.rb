@@ -145,6 +145,86 @@ RSpec.describe Etlify::BatchSyncJob do
       expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(true)
     end
 
+    it "switches from the discovery lock to a chunk lock when rate-limited",
+       :aggregate_failures do
+      user = create_user!(index: 1)
+
+      allow_any_instance_of(Etlify::Adapters::NullAdapter)
+        .to receive(:batch_upsert!)
+        .and_raise(Etlify::RateLimited.new("rate limited", status: 429))
+
+      described_class.perform_later("hubspot")
+      expect(cache.exist?(discovery_lock_key("hubspot"))).to be(true)
+
+      aj_perform_enqueued_jobs
+
+      # The discovery lock is released: a new discovery run can enqueue
+      # during the retry's wait window.
+      expect(cache.exist?(discovery_lock_key("hubspot"))).to be(false)
+
+      # The retry carries the discovered pairs (chunk mode) and holds its
+      # own chunk lock.
+      retry_jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(retry_jobs.size).to eq(1)
+      expect(retry_jobs.first[:at]).to be_present
+      expect(retry_jobs.first[:args][1]).to eq(["User", user.id])
+      expect(
+        cache.exist?(chunk_lock_key("hubspot", ["User", user.id]))
+      ).to be(true)
+    end
+
+    it "keeps the retry lock alive in sequential mode too",
+       :aggregate_failures do
+      minimal_adapter = Object.new
+      minimal_adapter.define_singleton_method(:upsert!) { |**_| "123" }
+      minimal_adapter.define_singleton_method(:delete!) { |**_| true }
+      Etlify::CRM.register(:seq_crm, adapter: minimal_adapter)
+
+      user = create_user!(index: 1)
+      pairs = ["User", user.id]
+
+      allow(Etlify::Synchronizer).to receive(:call)
+        .and_raise(Etlify::RateLimited.new("rate limited", status: 429))
+
+      described_class.perform_later("seq_crm", pairs)
+      expect(cache.exist?(chunk_lock_key("seq_crm", pairs))).to be(true)
+
+      aj_perform_enqueued_jobs
+
+      retry_jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(retry_jobs.size).to eq(1)
+      expect(cache.exist?(chunk_lock_key("seq_crm", pairs))).to be(true)
+
+      Etlify::CRM.registry.delete(:seq_crm)
+    end
+
+    it "re-enqueues only unprocessed groups after a mid-batch rate limit",
+       :aggregate_failures do
+      user = create_user!(index: 1)
+      pairs = ["User", user.id, "Company", company.id]
+
+      allow(Etlify::BatchSynchronizer).to receive(:call) do |records, **|
+        if records.first.is_a?(Company)
+          raise Etlify::RateLimited.new("rate limited", status: 429)
+        end
+
+        {synced: records.size, errors: 0}
+      end
+
+      described_class.perform_now("hubspot", pairs)
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(jobs.size).to eq(1)
+
+      # The User group was processed: only the Company pairs are retried.
+      expect(jobs.first[:args][1]).to eq(["Company", company.id])
+
+      # The retry is delayed by DEFAULT_RETRY_AFTER seconds.
+      expect(jobs.first[:at].to_f).to be_within(5).of(
+        Time.current.to_f + described_class::DEFAULT_RETRY_AFTER
+      )
+    end
+
     it "re-enqueues remaining pairs when batch fails mid-way" do
       user1 = create_user!(index: 1)
       user2 = create_user!(index: 2)
@@ -268,6 +348,16 @@ RSpec.describe Etlify::BatchSyncJob do
       expect(jobs.size).to eq(1)
     end
 
+    it "deduplicates chunks whose ids differ only by type" do
+      user = create_user!(index: 1)
+
+      described_class.perform_later("hubspot", ["User", user.id])
+      described_class.perform_later("hubspot", ["User", user.id.to_s])
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(jobs.size).to eq(1)
+    end
+
     it "allows different chunks for the same CRM to be enqueued in parallel" do
       user1 = create_user!(index: 1)
       user2 = create_user!(index: 2)
@@ -343,11 +433,7 @@ RSpec.describe Etlify::BatchSyncJob do
       described_class.perform_later("hubspot")
       expect(cache.exist?(discovery_lock_key("hubspot"))).to be(true)
 
-      begin
-        aj_perform_enqueued_jobs
-      rescue RuntimeError
-        nil
-      end
+      expect { aj_perform_enqueued_jobs }.to raise_error(RuntimeError)
 
       expect(cache.exist?(discovery_lock_key("hubspot"))).to be(false)
     end
@@ -362,11 +448,7 @@ RSpec.describe Etlify::BatchSyncJob do
       described_class.perform_later("hubspot", pairs)
       expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(true)
 
-      begin
-        aj_perform_enqueued_jobs
-      rescue RuntimeError
-        nil
-      end
+      expect { aj_perform_enqueued_jobs }.to raise_error(RuntimeError)
 
       expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(false)
     end

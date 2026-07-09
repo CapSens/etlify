@@ -182,6 +182,42 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(chunk_sizes).to eq([1, 2])
     end
 
+    it "chunks each CRM's pairs independently" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :email, value: :email},
+            crm_object_type: "contacts",
+          },
+          salesforce: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :email, value: :email},
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      create_user!(index: 1)
+      create_user!(index: 2)
+      create_user!(index: 3)
+
+      described_class.call(async: true, batch_size: 2)
+
+      jobs = aj_enqueued_jobs
+             .select { |j| j[:job] == Etlify::BatchSyncJob }
+      expect(jobs.size).to eq(4)
+
+      jobs_per_crm = jobs.group_by { |j| j[:args][0] }
+      chunk_sizes_per_crm = jobs_per_crm.transform_values do |crm_jobs|
+        crm_jobs.map { |j| j[:args][1].each_slice(2).count }.sort
+      end
+      expect(chunk_sizes_per_crm).to eq(
+        "hubspot" => [1, 2],
+        "salesforce" => [1, 2]
+      )
+    end
+
     it "returns zeros when there is nothing to sync" do
       allow(User).to receive(:etlify_crms).and_return({})
 
