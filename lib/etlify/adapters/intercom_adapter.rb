@@ -8,8 +8,10 @@ module Etlify
     # Intercom Adapter (REST API) with per-call object type.
     # The object_type is interpolated directly in the URL, mirroring the
     # HubSpot adapter convention. Intercom does not provide native batch
-    # endpoints, so batch_upsert! / batch_delete! loop over the single-record
-    # methods (the Etlify rate limiter throttles each HTTP call).
+    # endpoints, so batch_delete! loops over the single-record delete!
+    # (the Etlify rate limiter throttles each HTTP call). The adapter
+    # deliberately does not implement batch_upsert!: BatchSyncJob detects
+    # this and falls back to sequential per-record synchronization.
     #
     # Error handling:
     # - Non-2xx responses raise specific exceptions (Unauthorized, NotFound,
@@ -131,69 +133,6 @@ module Etlify
         return false if response[:status] == 404
 
         raise_for_error!(response, path: path)
-      end
-
-      # Sequential batch upsert. Intercom has no native batch endpoint, so
-      # this loops over the single-record upsert!.
-      # @param object_type [String] Intercom resource
-      # @param inputs [Array<Hash>] each {value:, properties:} where value is
-      #   the match_property value and properties the payload, synced as-is
-      # @param match_property [String] Unique property for matching (e.g. "email")
-      # @return [Hash{String => String}] mapping of each input's value (as
-      #   provided) to Intercom id
-      def batch_upsert!(object_type:, inputs:, match_property:)
-        if !object_type.is_a?(String) || object_type.empty?
-          raise ArgumentError, "object_type must be a String"
-        end
-        if match_property.to_s.strip.empty?
-          raise ArgumentError, "match_property must be provided"
-        end
-        if !inputs.is_a?(Array) || inputs.empty?
-          raise ArgumentError, "inputs must be a non-empty Array"
-        end
-
-        prop = match_property.to_s
-
-        inputs.each_with_object({}) do |input, mapping|
-          raw = fetch_input(input, :value).to_s
-          if normalize_match_value(prop, raw).empty?
-            raise ArgumentError, "every input must carry a non-blank :value"
-          end
-
-          crm_id = upsert!(
-            object_type: object_type,
-            payload: fetch_input(input, :properties) || {},
-            match_property: prop,
-            match_value: raw
-          )
-          mapping[raw] = crm_id.to_s if crm_id
-        end
-      end
-
-      # Sequential batch update by known Intercom id. Intercom has no native
-      # batch endpoint, so this loops over the single-record PUT.
-      # @param object_type [String] Intercom resource
-      # @param records [Array<Hash>] each {crm_id:, properties:}
-      # @return [Hash{String => String}] identity mapping {crm_id => crm_id}
-      def batch_update!(object_type:, records:)
-        if !object_type.is_a?(String) || object_type.empty?
-          raise ArgumentError, "object_type must be a String"
-        end
-        if !records.is_a?(Array) || records.empty?
-          raise ArgumentError, "records must be a non-empty Array"
-        end
-
-        records.each_with_object({}) do |record, mapping|
-          id = fetch_crm_id(record)
-          if id.empty?
-            raise ArgumentError, "every record must carry a non-blank :crm_id"
-          end
-
-          properties = stringify_keys(record[:properties] || record["properties"] || {})
-          normalize_email!(object_type, properties)
-          update_object(object_type, id, properties)
-          mapping[id] = id
-        end
       end
 
       # Sequential batch delete. Loops over delete! for each id.
@@ -348,14 +287,6 @@ module Etlify
       def normalize_match_value(match_property, value)
         clean = value.to_s.strip
         (match_property == "email") ? clean.downcase : clean
-      end
-
-      def fetch_input(input, key)
-        input[key] || input[key.to_s]
-      end
-
-      def fetch_crm_id(record)
-        (record[:crm_id] || record["crm_id"]).to_s.strip
       end
 
       def normalize_email!(object_type, properties)
