@@ -59,8 +59,9 @@ module Etlify
           per_crm.each do |crm, relation|
             next unless Etlify::CRM.enabled?(crm)
 
-            relation.ids.each { |id| pending_pairs[crm] << [model.name, id] }
-            model_count += relation.ids.size
+            ids = relation.ids
+            ids.each { |id| pending_pairs[crm] << [model.name, id] }
+            model_count += ids.size
           end
 
           stats[:per_model][model.name] = model_count

@@ -2,7 +2,6 @@ module Etlify
   class BatchSyncJob < ActiveJob::Base
     queue_as { Etlify.config.job_queue_name }
 
-    MAX_BATCH_SIZE = 5_000
     LOCK_TTL = 30.minutes
     DEFAULT_RETRY_AFTER = 10
 
