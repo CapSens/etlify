@@ -150,7 +150,7 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(ids.sort).to eq([user1.id, user2.id].sort)
     end
 
-    it "honors batch_size while collecting all ids per CRM" do
+    it "chunks records into multiple BatchSyncJobs respecting batch_size" do
       allow(User).to receive(:etlify_crms).and_return(
         {
           hubspot: {
@@ -173,11 +173,83 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
 
       jobs = aj_enqueued_jobs
              .select { |j| j[:job] == Etlify::BatchSyncJob }
-      expect(jobs.size).to eq(1)
+      expect(jobs.size).to eq(2)
 
-      flat_pairs = jobs.first[:args][1]
-      ids = flat_pairs.each_slice(2).map(&:last)
-      expect(ids.sort).to eq([user1.id, user2.id, user3.id].sort)
+      all_ids = jobs.flat_map { |job| job[:args][1].each_slice(2).map(&:last) }
+      expect(all_ids.sort).to eq([user1.id, user2.id, user3.id].sort)
+
+      chunk_sizes = jobs.map { |job| job[:args][1].each_slice(2).count }.sort
+      expect(chunk_sizes).to eq([1, 2])
+    end
+
+    it "chunks each CRM's pairs independently" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :email, value: :email},
+            crm_object_type: "contacts",
+          },
+          salesforce: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :email, value: :email},
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      create_user!(index: 1)
+      create_user!(index: 2)
+      create_user!(index: 3)
+
+      described_class.call(async: true, batch_size: 2)
+
+      jobs = aj_enqueued_jobs
+             .select { |j| j[:job] == Etlify::BatchSyncJob }
+      expect(jobs.size).to eq(4)
+
+      jobs_per_crm = jobs.group_by { |j| j[:args][0] }
+      chunk_sizes_per_crm = jobs_per_crm.transform_values do |crm_jobs|
+        crm_jobs.map { |j| j[:args][1].each_slice(2).count }.sort
+      end
+      expect(chunk_sizes_per_crm).to eq(
+        "hubspot" => [1, 2],
+        "salesforce" => [1, 2]
+      )
+    end
+
+    it "counts chunks dropped by the enqueue-time dedup lock",
+       :aggregate_failures do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :email, value: :email},
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      user1 = create_user!(index: 1)
+      user2 = create_user!(index: 2)
+      user3 = create_user!(index: 3)
+
+      # Pre-hold the lock of the first chunk (2 pairs) so its enqueue is
+      # deduplicated; the second chunk (1 pair) goes through.
+      held_pairs = ["User", user1.id, "User", user2.id]
+      Etlify.config.cache_store.write(
+        Etlify::BatchSyncJob.lock_key("hubspot", held_pairs),
+        "1"
+      )
+
+      stats = described_class.call(async: true, batch_size: 2)
+
+      expect(stats[:total]).to eq(3)
+      expect(stats[:skipped_chunks]).to eq(1)
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == Etlify::BatchSyncJob }
+      expect(jobs.size).to eq(1)
+      expect(jobs.first[:args][1]).to eq(["User", user3.id])
     end
 
     it "returns zeros when there is nothing to sync" do
@@ -189,6 +261,30 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       expect(stats[:errors]).to eq(0)
       expect(stats[:per_model]).to eq({})
       expect(aj_enqueued_jobs).to be_empty
+    end
+  end
+
+  describe "batch_size validation" do
+    it "raises ArgumentError on a non-positive batch_size",
+       :aggregate_failures do
+      expect do
+        described_class.call(async: true, batch_size: 0)
+      end.to raise_error(ArgumentError, "batch_size must be an integer >= 1")
+
+      expect do
+        described_class.call(async: true, batch_size: -5)
+      end.to raise_error(ArgumentError, "batch_size must be an integer >= 1")
+    end
+
+    it "raises the same ArgumentError on a non-numeric batch_size",
+       :aggregate_failures do
+      expect do
+        described_class.call(async: true, batch_size: nil)
+      end.to raise_error(ArgumentError, "batch_size must be an integer >= 1")
+
+      expect do
+        described_class.call(async: true, batch_size: "abc")
+      end.to raise_error(ArgumentError, "batch_size must be an integer >= 1")
     end
   end
 
