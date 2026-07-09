@@ -34,6 +34,9 @@ module Etlify
         @crm_name   = crm_name&.to_sym
         @async      = !!async
         @batch_size = Integer(batch_size)
+        if @batch_size < 1
+          raise ArgumentError, "batch_size must be >= 1"
+        end
       end
 
       def call

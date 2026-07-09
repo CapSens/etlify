@@ -161,6 +161,11 @@ module Etlify
     # - Chunk mode (explicit record_pairs): one lock per (CRM, pairs content)
     #   so independent chunks can be enqueued and executed in parallel while
     #   still deduplicating identical re-enqueues.
+    # Pairs are normalized (stringified, sorted) before hashing so the key
+    # is stable across pair ordering and the String/Integer id round-trip
+    # of ActiveJob serialization. Chunk boundaries shifting between two
+    # discovery runs still produce different keys: the dedup targets
+    # identical enqueues, not overlapping populations.
     def batch_lock_key(args)
       crm_name = args[0]
       record_pairs = args[1]
@@ -168,7 +173,10 @@ module Etlify
       if record_pairs.nil?
         "etlify:batch_sync_lock:#{crm_name}:discovery"
       else
-        digest = ::Digest::SHA256.hexdigest(record_pairs.to_s)
+        normalized = record_pairs.each_slice(2)
+                                 .map { |model, id| [model.to_s, id.to_s] }
+                                 .sort
+        digest = ::Digest::SHA256.hexdigest(JSON.generate(normalized))
         "etlify:batch_sync_lock:#{crm_name}:chunk:#{digest}"
       end
     end

@@ -30,7 +30,10 @@ RSpec.describe Etlify::BatchSyncJob do
   end
 
   def chunk_lock_key(crm_name, pairs)
-    digest = ::Digest::SHA256.hexdigest(pairs.to_s)
+    normalized = pairs.each_slice(2)
+                      .map { |model, id| [model.to_s, id.to_s] }
+                      .sort
+    digest = ::Digest::SHA256.hexdigest(JSON.generate(normalized))
     "etlify:batch_sync_lock:#{crm_name}:chunk:#{digest}"
   end
 
@@ -250,6 +253,21 @@ RSpec.describe Etlify::BatchSyncJob do
       expect(jobs.size).to eq(1)
     end
 
+    it "deduplicates chunks carrying the same pairs in a different order" do
+      user1 = create_user!(index: 1)
+      user2 = create_user!(index: 2)
+
+      described_class.perform_later(
+        "hubspot", ["User", user1.id, "User", user2.id]
+      )
+      described_class.perform_later(
+        "hubspot", ["User", user2.id, "User", user1.id]
+      )
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(jobs.size).to eq(1)
+    end
+
     it "allows different chunks for the same CRM to be enqueued in parallel" do
       user1 = create_user!(index: 1)
       user2 = create_user!(index: 2)
@@ -306,6 +324,32 @@ RSpec.describe Etlify::BatchSyncJob do
       aj_perform_enqueued_jobs
 
       expect(cache.exist?(chunk_lock_key("hubspot", pairs))).to be(false)
+    end
+
+    it "clears the discovery lock after perform" do
+      described_class.perform_later("hubspot")
+      expect(cache.exist?(discovery_lock_key("hubspot"))).to be(true)
+
+      aj_perform_enqueued_jobs
+
+      expect(cache.exist?(discovery_lock_key("hubspot"))).to be(false)
+    end
+
+    it "clears the discovery lock even when perform raises" do
+      create_user!(index: 1)
+      allow(Etlify::BatchSynchronizer).to receive(:call)
+        .and_raise(RuntimeError, "unexpected failure")
+
+      described_class.perform_later("hubspot")
+      expect(cache.exist?(discovery_lock_key("hubspot"))).to be(true)
+
+      begin
+        aj_perform_enqueued_jobs
+      rescue RuntimeError
+        nil
+      end
+
+      expect(cache.exist?(discovery_lock_key("hubspot"))).to be(false)
     end
 
     it "clears the chunk lock even when perform raises" do

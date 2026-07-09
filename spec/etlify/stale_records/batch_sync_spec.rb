@@ -194,6 +194,19 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
     end
   end
 
+  describe "batch_size validation" do
+    it "raises ArgumentError on a non-positive batch_size",
+       :aggregate_failures do
+      expect do
+        described_class.call(async: true, batch_size: 0)
+      end.to raise_error(ArgumentError, "batch_size must be >= 1")
+
+      expect do
+        described_class.call(async: true, batch_size: -5)
+      end.to raise_error(ArgumentError, "batch_size must be >= 1")
+    end
+  end
+
   describe ".call in sync mode (inline)" do
     before do
       allow(User).to receive(:etlify_crms).and_return(
