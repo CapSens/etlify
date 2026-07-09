@@ -30,15 +30,11 @@ RSpec.describe Etlify::BatchSyncJob do
   end
 
   def chunk_lock_key(crm_name, pairs)
-    normalized = pairs.each_slice(2)
-                      .map { |model, id| [model.to_s, id.to_s] }
-                      .sort
-    digest = ::Digest::SHA256.hexdigest(JSON.generate(normalized))
-    "etlify:batch_sync_lock:#{crm_name}:chunk:#{digest}"
+    Etlify::BatchSyncJob.lock_key(crm_name, pairs)
   end
 
   def discovery_lock_key(crm_name)
-    "etlify:batch_sync_lock:#{crm_name}:discovery"
+    Etlify::BatchSyncJob.lock_key(crm_name)
   end
 
   describe "#perform with explicit record pairs" do

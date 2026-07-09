@@ -5,7 +5,7 @@ module Etlify
     LOCK_TTL = 30.minutes
     DEFAULT_RETRY_AFTER = 10
 
-    # Ensure only one batch job per CRM is active at a time.
+    # Deduplicate identical enqueues via a cache lock (see .lock_key).
     around_enqueue do |job, block|
       cache = Etlify.config.cache_store
       key = batch_lock_key(job.arguments)
@@ -30,10 +30,7 @@ module Etlify
     around_perform do |job, block|
       block.call
     ensure
-      # When reenqueue transferred the lock to the retried job (same key
-      # for identical pairs), deleting it here would leave the retry
-      # without dedup during its wait window.
-      unless @lock_released
+      unless lock_transferred_to_retry?
         cache = Etlify.config.cache_store
         cache.delete(batch_lock_key(job.arguments))
       end
@@ -53,6 +50,30 @@ module Etlify
       end
 
       process_pairs(pairs, crm_sym)
+    end
+
+    # Cache key deduplicating enqueues of this job. Public contract: also
+    # used by specs and handy for ops (inspecting or purging a lock).
+    # - Discovery mode (no record_pairs): one lock per CRM to prevent
+    #   piling up redundant discovery runs (cron-triggered).
+    # - Chunk mode (explicit record_pairs): one lock per (CRM, pairs
+    #   content) so independent chunks can be enqueued and executed in
+    #   parallel while still deduplicating identical re-enqueues.
+    # Pairs are normalized (stringified, sorted) before hashing so the key
+    # is stable across pair ordering and the String/Integer id round-trip
+    # of ActiveJob serialization. Chunk boundaries shifting between two
+    # discovery runs still produce different keys: the dedup targets
+    # identical enqueues, not overlapping populations.
+    def self.lock_key(crm_name, record_pairs = nil)
+      if record_pairs.nil?
+        "etlify:batch_sync_lock:#{crm_name}:discovery"
+      else
+        normalized = record_pairs.each_slice(2)
+                                 .map { |model, id| [model.to_s, id.to_s] }
+                                 .sort
+        digest = ::Digest::SHA256.hexdigest(JSON.generate(normalized))
+        "etlify:batch_sync_lock:#{crm_name}:chunk:#{digest}"
+      end
     end
 
     private
@@ -143,41 +164,27 @@ module Etlify
     def reenqueue(crm_name, remaining_pairs, wait:)
       cache = Etlify.config.cache_store
       # Clear the current job's lock so a re-enqueue with overlapping or
-      # identical pairs can acquire its own lock, and mark it released so
-      # the around_perform ensure does not delete the lock the re-enqueued
-      # job may have just re-acquired under the same key.
+      # identical pairs can acquire its own lock. For a discovery job this
+      # releases the per-CRM discovery lock early: a concurrent discovery
+      # run may overlap with the retry, at the bounded cost of redundant
+      # API calls (the sync itself is digest-idempotent).
       cache.delete(batch_lock_key(arguments))
-      @lock_released = true
+      @lock_transferred_to_retry = true
 
       flat = remaining_pairs.flatten
       self.class.set(wait: wait.seconds)
           .perform_later(crm_name.to_s, flat)
     end
 
-    # Lock key strategy:
-    # - Discovery mode (no record_pairs): one lock per CRM to prevent
-    #   piling up redundant discovery runs (cron-triggered).
-    # - Chunk mode (explicit record_pairs): one lock per (CRM, pairs content)
-    #   so independent chunks can be enqueued and executed in parallel while
-    #   still deduplicating identical re-enqueues.
-    # Pairs are normalized (stringified, sorted) before hashing so the key
-    # is stable across pair ordering and the String/Integer id round-trip
-    # of ActiveJob serialization. Chunk boundaries shifting between two
-    # discovery runs still produce different keys: the dedup targets
-    # identical enqueues, not overlapping populations.
-    def batch_lock_key(args)
-      crm_name = args[0]
-      record_pairs = args[1]
+    # The around_perform ensure must not delete the lock the re-enqueued
+    # job may have just re-acquired under the same key (identical pairs):
+    # it would leave the retry without dedup during its wait window.
+    def lock_transferred_to_retry?
+      !!@lock_transferred_to_retry
+    end
 
-      if record_pairs.nil?
-        "etlify:batch_sync_lock:#{crm_name}:discovery"
-      else
-        normalized = record_pairs.each_slice(2)
-                                 .map { |model, id| [model.to_s, id.to_s] }
-                                 .sort
-        digest = ::Digest::SHA256.hexdigest(JSON.generate(normalized))
-        "etlify:batch_sync_lock:#{crm_name}:chunk:#{digest}"
-      end
+    def batch_lock_key(args)
+      self.class.lock_key(args[0], args[1])
     end
   end
 end
