@@ -33,9 +33,9 @@ module Etlify
         @models     = models
         @crm_name   = crm_name&.to_sym
         @async      = !!async
-        @batch_size = Integer(batch_size)
-        if @batch_size < 1
-          raise ArgumentError, "batch_size must be >= 1"
+        @batch_size = Integer(batch_size, exception: false)
+        if @batch_size.nil? || @batch_size < 1
+          raise ArgumentError, "batch_size must be an integer >= 1"
         end
       end
 
@@ -131,8 +131,6 @@ module Etlify
         skipped = 0
 
         pending_pairs.each do |crm, pairs|
-          next if pairs.empty?
-
           job_class = job_class_for(crm)
 
           pairs.each_slice(@batch_size) do |chunk|

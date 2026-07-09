@@ -269,11 +269,22 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
        :aggregate_failures do
       expect do
         described_class.call(async: true, batch_size: 0)
-      end.to raise_error(ArgumentError, "batch_size must be >= 1")
+      end.to raise_error(ArgumentError, "batch_size must be an integer >= 1")
 
       expect do
         described_class.call(async: true, batch_size: -5)
-      end.to raise_error(ArgumentError, "batch_size must be >= 1")
+      end.to raise_error(ArgumentError, "batch_size must be an integer >= 1")
+    end
+
+    it "raises the same ArgumentError on a non-numeric batch_size",
+       :aggregate_failures do
+      expect do
+        described_class.call(async: true, batch_size: nil)
+      end.to raise_error(ArgumentError, "batch_size must be an integer >= 1")
+
+      expect do
+        described_class.call(async: true, batch_size: "abc")
+      end.to raise_error(ArgumentError, "batch_size must be an integer >= 1")
     end
   end
 
