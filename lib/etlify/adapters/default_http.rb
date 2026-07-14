@@ -22,6 +22,7 @@ module Etlify
         request_class = {
           get: Net::HTTP::Get,
           post: Net::HTTP::Post,
+          put: Net::HTTP::Put,
           patch: Net::HTTP::Patch,
           delete: Net::HTTP::Delete,
         }.fetch(method) { raise ArgumentError, "Unsupported method: #{method.inspect}" }
