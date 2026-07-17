@@ -71,6 +71,62 @@ RSpec.describe Etlify::Deleter do
     end
   end
 
+  context "when an explicit crm_id is given" do
+    it "deletes using it even when no sync line exists" do
+      adapter_class = Class.new do
+        define_method(:delete!) do |crm_id:, object_type:|
+          true
+        end
+      end
+      adapter_instance = adapter_class.new
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: adapter_instance,
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      expect(adapter_instance).to receive(:delete!).with(
+        crm_id: "crm-explicit",
+        object_type: "contacts"
+      ).and_return(true)
+
+      res = described_class.call(user, crm_name: :hubspot, crm_id: "crm-explicit")
+      expect(res).to eq(:deleted)
+    end
+
+    it "takes precedence over the sync line crm_id" do
+      create_line(user, crm_name: "hubspot", crm_id: "crm-from-line")
+
+      adapter_class = Class.new do
+        define_method(:delete!) do |crm_id:, object_type:|
+          true
+        end
+      end
+      adapter_instance = adapter_class.new
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: adapter_instance,
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      expect(adapter_instance).to receive(:delete!).with(
+        crm_id: "crm-explicit",
+        object_type: "contacts"
+      ).and_return(true)
+
+      res = described_class.call(user, crm_name: :hubspot, crm_id: "crm-explicit")
+      expect(res).to eq(:deleted)
+    end
+  end
+
   context "when the CRM is disabled" do
     around do |example|
       previous = Etlify::CRM.registry[:hubspot]

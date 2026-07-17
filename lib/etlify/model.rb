@@ -102,8 +102,8 @@ module Etlify
         end
 
         unless klass.method_defined?(delete_m)
-          klass.define_method(delete_m) do
-            crm_delete!(crm_name: crm_name)
+          klass.define_method(delete_m) do |crm_id: nil|
+            crm_delete!(crm_name: crm_name, crm_id: crm_id)
           end
         end
 
@@ -173,11 +173,11 @@ module Etlify
       end
     end
 
-    def crm_delete!(crm_name: nil)
+    def crm_delete!(crm_name: nil, crm_id: nil)
       raise ArgumentError, "crm_name is required" if crm_name.nil?
       return true unless Etlify::CRM.enabled?(crm_name)
 
-      Etlify::Deleter.call(self, crm_name: crm_name)
+      Etlify::Deleter.call(self, crm_name: crm_name, crm_id: crm_id)
     end
 
     private

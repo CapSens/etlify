@@ -337,7 +337,20 @@ RSpec.describe Etlify::Model do
       end
       inst = klass.new
       expect(inst.hubspot_delete!).to eq(:deleted)
-      expect(inst.seen_del).to eq({crm_name: :hubspot})
+      expect(inst.seen_del).to eq({crm_name: :hubspot, crm_id: nil})
+    end
+
+    it "forwards an explicit crm_id to crm_delete!" do
+      klass = build_including_class do
+        attr_reader :seen_del
+        def crm_delete!(**kw)
+          @seen_del = kw
+          :deleted
+        end
+      end
+      inst = klass.new
+      expect(inst.hubspot_delete!(crm_id: "crm-explicit")).to eq(:deleted)
+      expect(inst.seen_del).to eq({crm_name: :hubspot, crm_id: "crm-explicit"})
     end
 
     it "defines registered_crms only if missing" do
@@ -594,8 +607,17 @@ RSpec.describe Etlify::Model do
     it "delegates to Etlify::Deleter.call" do
       klass = build_including_class
       inst = klass.new
-      expect(Etlify::Deleter).to receive(:call).with(inst, crm_name: :hubspot)
+      expect(Etlify::Deleter).to receive(:call)
+        .with(inst, crm_name: :hubspot, crm_id: nil)
       inst.crm_delete!(crm_name: :hubspot)
+    end
+
+    it "forwards an explicit crm_id to Etlify::Deleter.call" do
+      klass = build_including_class
+      inst = klass.new
+      expect(Etlify::Deleter).to receive(:call)
+        .with(inst, crm_name: :hubspot, crm_id: "crm-explicit")
+      inst.crm_delete!(crm_name: :hubspot, crm_id: "crm-explicit")
     end
 
     context "when the CRM is disabled" do
