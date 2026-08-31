@@ -29,15 +29,9 @@ module Etlify
         validate_enabled_type!(enabled)
         validate_rate_limit!(options[:rate_limit]) if options[:rate_limit]
 
-        copied_options =
-          if options
-            options.respond_to?(:deep_dup) ? options.deep_dup : options.dup
-          else
-            {}
-          end
-        copied_options.freeze
+        copied_options = options.deep_dup.freeze
 
-        install_rate_limiter!(adapter, options[:rate_limit])
+        install_rate_limiter!(key, adapter, options[:rate_limit])
 
         registry[key] = RegistryItem.new(
           name: key,
@@ -69,14 +63,28 @@ module Etlify
 
       private
 
-      def install_rate_limiter!(adapter, rate_limit)
+      def install_rate_limiter!(crm_name, adapter, rate_limit)
         return unless rate_limit
         return unless adapter.respond_to?(:rate_limiter=)
 
         adapter.rate_limiter = Etlify::RateLimiter.new(
           max_requests: rate_limit[:max_requests],
-          period: rate_limit[:period]
+          period: rate_limit[:period],
+          cache: resolve_rate_limit_cache(rate_limit),
+          key: "#{Etlify::RateLimiter::DEFAULT_KEY}:#{crm_name}"
         )
+      end
+
+      # The shared bucket is on by default: a rate_limit without an explicit
+      # :cache key uses Etlify.config.cache_store. Pass cache: false to keep
+      # the per-process pacing, or a specific store to isolate the budget.
+      #
+      # The store is resolved once, at registration time, so configure
+      # Etlify.config.cache_store before calling register.
+      def resolve_rate_limit_cache(rate_limit)
+        return rate_limit[:cache] if rate_limit.key?(:cache)
+
+        Etlify.config.cache_store
       end
 
       def validate_enabled_type!(enabled)

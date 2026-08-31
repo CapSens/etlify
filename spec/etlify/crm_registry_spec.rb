@@ -138,4 +138,187 @@ end.new
       expect(described_class.enabled?(:unknown)).to be(true)
     end
   end
+
+  describe "rate limiter installation" do
+    let(:throttled_adapter) do
+      Class.new do
+        attr_accessor :rate_limiter
+
+        def upsert!(**)
+        end
+      end.new
+    end
+
+    let(:store) { ActiveSupport::Cache::MemoryStore.new }
+
+    it "installs no limiter when no rate_limit is configured" do
+      described_class.register(:hubspot, adapter: throttled_adapter)
+
+      expect(throttled_adapter.rate_limiter).to be_nil
+    end
+
+    it "skips adapters without a rate_limiter accessor" do
+      expect do
+        described_class.register(
+          :hubspot,
+          adapter: adapter_instance,
+          options: {rate_limit: {max_requests: 5, period: 1}}
+        )
+      end.not_to raise_error
+
+      expect(adapter_instance).not_to respond_to(:rate_limiter)
+    end
+
+    it "installs a limiter with the configured rate" do
+      described_class.register(
+        :hubspot,
+        adapter: throttled_adapter,
+        options: {rate_limit: {max_requests: 5, period: 1}}
+      )
+
+      limiter = throttled_adapter.rate_limiter
+
+      expect(limiter).to be_a(Etlify::RateLimiter)
+      expect(limiter.max_requests).to eq(5)
+      expect(limiter.period).to eq(1.0)
+    end
+
+    it "scopes the bucket key per CRM" do
+      described_class.register(
+        :hubspot,
+        adapter: throttled_adapter,
+        options: {rate_limit: {max_requests: 5, period: 1}}
+      )
+
+      expect(throttled_adapter.rate_limiter.key).to eq(
+        "#{Etlify::RateLimiter::DEFAULT_KEY}:hubspot"
+      )
+    end
+
+    it "shares the bucket through the configured cache store by default" do
+      allow(Etlify.config).to receive(:cache_store).and_return(store)
+
+      described_class.register(
+        :hubspot,
+        adapter: throttled_adapter,
+        options: {rate_limit: {max_requests: 5, period: 1}}
+      )
+
+      expect(throttled_adapter.rate_limiter).to be_shared
+    end
+
+    it "honours an explicit cache store" do
+      allow(Etlify.config).to receive(:cache_store).and_return(nil)
+
+      described_class.register(
+        :hubspot,
+        adapter: throttled_adapter,
+        options: {
+          rate_limit: {max_requests: 5, period: 1, cache: store},
+        }
+      )
+
+      expect(throttled_adapter.rate_limiter).to be_shared
+    end
+
+    it "disables the bucket on cache: false" do
+      allow(Etlify.config).to receive(:cache_store).and_return(store)
+
+      described_class.register(
+        :hubspot,
+        adapter: throttled_adapter,
+        options: {
+          rate_limit: {max_requests: 5, period: 1, cache: false},
+        }
+      )
+
+      expect(throttled_adapter.rate_limiter).not_to be_shared
+    end
+
+    it "disables the bucket when the configured store is nil" do
+      allow(Etlify.config).to receive(:cache_store).and_return(nil)
+
+      described_class.register(
+        :hubspot,
+        adapter: throttled_adapter,
+        options: {rate_limit: {max_requests: 5, period: 1}}
+      )
+
+      expect(throttled_adapter.rate_limiter).not_to be_shared
+    end
+
+    it "raises when rate_limit is not a Hash" do
+      expect do
+        described_class.register(
+          :hubspot,
+          adapter: throttled_adapter,
+          options: {rate_limit: "5 per second"}
+        )
+      end.to raise_error(ArgumentError, "rate_limit must be a Hash")
+    end
+
+    it "raises when max_requests is missing" do
+      expect do
+        described_class.register(
+          :hubspot,
+          adapter: throttled_adapter,
+          options: {rate_limit: {period: 1}}
+        )
+      end.to raise_error(
+        ArgumentError,
+        "rate_limit[:max_requests] must be a positive number"
+      )
+    end
+
+    it "raises when max_requests is not positive" do
+      expect do
+        described_class.register(
+          :hubspot,
+          adapter: throttled_adapter,
+          options: {rate_limit: {max_requests: 0, period: 1}}
+        )
+      end.to raise_error(
+        ArgumentError,
+        "rate_limit[:max_requests] must be a positive number"
+      )
+    end
+
+    it "raises when period is missing" do
+      expect do
+        described_class.register(
+          :hubspot,
+          adapter: throttled_adapter,
+          options: {rate_limit: {max_requests: 5}}
+        )
+      end.to raise_error(
+        ArgumentError,
+        "rate_limit[:period] must be a positive number"
+      )
+    end
+
+    it "raises when period is not positive" do
+      expect do
+        described_class.register(
+          :hubspot,
+          adapter: throttled_adapter,
+          options: {rate_limit: {max_requests: 5, period: 0}}
+        )
+      end.to raise_error(
+        ArgumentError,
+        "rate_limit[:period] must be a positive number"
+      )
+    end
+
+    it "raises at registration when the cache cannot increment" do
+      expect do
+        described_class.register(
+          :hubspot,
+          adapter: throttled_adapter,
+          options: {
+            rate_limit: {max_requests: 5, period: 1, cache: Object.new},
+          }
+        )
+      end.to raise_error(ArgumentError, /#increment/)
+    end
+  end
 end
