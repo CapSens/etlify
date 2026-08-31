@@ -439,16 +439,39 @@ Etlify::CRM.register(
 
 - `max_requests`: maximum number of HTTP requests allowed in the period.
 - `period`: time window in seconds.
+- `cache`: store backing the **shared bucket**. Defaults to `Etlify.config.cache_store`. Pass `false` to fall back to per-process pacing, or a specific store to isolate the budget.
 
 When `rate_limit` is not configured, no throttling is applied (current behaviour preserved).
 
+#### Shared bucket vs local pacing
+
+The budget is enforced in one of two modes:
+
+| | Shared bucket (default) | Local pacing (`cache: false`) |
+|---|---|---|
+| Mechanism | atomic counter per fixed window in the cache | `sleep(period / max_requests)` before each call |
+| Bounds the rate of | all threads and all processes together | one thread |
+| N concurrent workers issue | `max_requests` per period | up to **N × max_requests** per period |
+
+Local pacing was the only mode before `0.14.0`. It paces a single thread correctly, but it holds no shared state: five Sidekiq threads each pacing at 5 requests/s issue 25 requests/s, which is how you collect 429s despite a configured `rate_limit`.
+
+The shared bucket needs a store shared across processes (Redis, Memcached) to bound the **global** rate. With a per-process `MemoryStore` it still bounds each process, which is stricter than local pacing but not global.
+
+Two caveats worth knowing:
+
+- **Fixed window, not sliding.** Calls straddling a window boundary can burst up to `2 × max_requests` within one `period`. Halve `max_requests` if your CRM punishes bursts.
+- **Bounded wait.** A call waits at most `RateLimiter::MAX_WINDOW_WAITS` windows for budget, then proceeds paced locally. A limit configured far below the actual workload slows the work down instead of deadlocking a worker thread.
+
+If the store cannot answer (a `NullStore`, a store without `#increment`, or a Redis error swallowed by the cache failsafe), the limiter degrades to local pacing rather than letting the call through unthrottled.
+
 #### How it works
 
-1. At `CRM.register` time, if `rate_limit` is configured and the adapter supports `rate_limiter=`, a `RateLimiter` is **permanently installed** on the adapter.
-2. Every HTTP request in the adapter calls `rate_limiter.throttle!`, which sleeps the minimum necessary time to stay within the rate limit.
+1. At `CRM.register` time, if `rate_limit` is configured and the adapter supports `rate_limiter=`, a `RateLimiter` is **permanently installed** on the adapter. The cache store is resolved once, at that moment, so configure `Etlify.config.cache_store` before registering.
+2. Every HTTP request in the adapter calls `rate_limiter.throttle!`, which either claims a slot in the shared bucket (waiting for the next window when the budget is spent) or sleeps the local interval.
 3. **All sync paths are throttled**: `BatchSyncJob`, individual `SyncJob`, inline `crm_sync!(async: false)`, and pending sync flushes — they all go through the same adapter.
 4. If the CRM returns a **429 (Rate Limited)** response despite throttling, `BatchSyncJob` re-enqueues itself with the **remaining records** after a backoff delay (default: 10 seconds).
-5. A cache-based lock deduplicates `BatchSyncJob` enqueues: **discovery** runs (no explicit pairs, e.g. cron-triggered) are limited to **one per CRM** at a time, while **chunk** jobs (explicit pairs) are locked **per content** — independent chunks for the same CRM run in parallel, but identical enqueues (including `RateLimited` re-enqueues) are deduplicated. The dedup requires a cache store shared across processes (e.g. Redis or Memcached): with a per-process `MemoryStore`, jobs enqueued from different processes are not deduplicated.
+5. Bucket keys are namespaced per CRM (`etlify:rate_limit:<crm_name>:<window>`), so two CRMs registered with their own `rate_limit` never draw on the same budget. These keys are independent from the batch-sync lock keys below, even when both use the same store.
+6. A cache-based lock deduplicates `BatchSyncJob` enqueues: **discovery** runs (no explicit pairs, e.g. cron-triggered) are limited to **one per CRM** at a time, while **chunk** jobs (explicit pairs) are locked **per content** — independent chunks for the same CRM run in parallel, but identical enqueues (including `RateLimited` re-enqueues) are deduplicated. The dedup requires a cache store shared across processes (e.g. Redis or Memcached): with a per-process `MemoryStore`, jobs enqueued from different processes are not deduplicated.
 
 #### Custom adapter support
 
