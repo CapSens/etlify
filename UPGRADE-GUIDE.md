@@ -1,3 +1,111 @@
+# UPGRADING FROM 0.13.0 -> 0.14.0
+
+## 1. Overview
+
+No API change, but a **behaviour change worth planning for**: the rate limiter
+now enforces `rate_limit` through a bucket shared across threads and processes,
+instead of a per-call `sleep`.
+
+Before `0.14.0`, `RateLimiter#throttle!` slept `period / max_requests` before
+each HTTP call. That paces a single thread correctly, but it holds no shared
+state: N workers running concurrently each paced themselves and the process as
+a whole issued up to **N × max_requests** per period. If you saw 429s despite a
+configured `rate_limit`, this is why.
+
+From `0.14.0`, each call atomically claims a slot in a fixed window stored in
+your cache, so the whole fleet draws on one budget.
+
+This matters more since `0.13.0`, which replaced the global per-CRM
+`BatchSyncJob` lock with a per-chunk lock: sibling chunks for the same CRM can
+now run in parallel, so the old per-process pacing no longer bounded anything
+useful.
+
+---
+
+## 2. Database migrations
+
+No database migration required for this upgrade.
+
+---
+
+## 3. Configuration changes (optional)
+
+Nothing to change. A `rate_limit` without an explicit `cache:` key now uses
+`Etlify.config.cache_store`, the same store already used for enqueue dedup
+locks:
+
+```ruby
+Etlify::CRM.register(
+  :airtable,
+  adapter: adapter,
+  options: {
+    rate_limit: {max_requests: 5, period: 1},
+  }
+)
+```
+
+To bound the rate **globally**, that store must be shared across processes
+(Redis, Memcached). With the per-process `MemoryStore` default, the bucket still
+bounds each process — stricter than before, but not global.
+
+Three ways to steer it:
+
+```ruby
+# Explicit store (e.g. isolate the CRM budget from the app cache)
+rate_limit: {max_requests: 5, period: 1, cache: Redis::Store.new(...)}
+
+# Keep the pre-0.14.0 per-process pacing
+rate_limit: {max_requests: 5, period: 1, cache: false}
+
+# No throttling at all (unchanged)
+# omit rate_limit entirely
+```
+
+The store is resolved **once**, at `CRM.register` time. Configure
+`Etlify.config.cache_store` before registering your CRMs.
+
+---
+
+## 4. Expected behaviour after upgrading
+
+- Calls that would have exceeded the budget now **wait for the next window**
+  rather than going out and collecting a 429. Expect throughput to drop to the
+  rate you actually configured, and jobs to take correspondingly longer. If
+  syncs suddenly feel slower, your configured limit was being exceeded before.
+- 429 responses from the CRM should become rare. `BatchSyncJob` still handles
+  them by re-enqueuing the remaining records after a backoff.
+- The bucket is a **fixed** window, not sliding: calls straddling a boundary can
+  burst up to `2 × max_requests` within one `period`. Halve `max_requests` if
+  your CRM punishes bursts.
+- A call waits at most `Etlify::RateLimiter::MAX_WINDOW_WAITS` (10) windows for
+  budget, then proceeds paced locally. A limit configured far below the actual
+  workload slows the work down instead of deadlocking a worker thread.
+- If the store cannot answer (`NullStore`, a store without `#increment`, or a
+  Redis error swallowed by the cache failsafe), the limiter falls back to local
+  pacing rather than letting the call through unthrottled.
+
+---
+
+## 5. QA & testing checklist
+
+- [ ] `Etlify::CRM.fetch(:your_crm).adapter.rate_limiter.shared?` returns `true`
+      in production (`false` means the bucket is off and you are back to
+      per-process pacing).
+- [ ] The cache store is shared across processes, not a `MemoryStore`.
+- [ ] Watch your CRM's 429 rate and your job durations over the first hours.
+- [ ] If several CRMs are registered, confirm each has its own budget:
+      `adapter.rate_limiter.key` should end with the CRM name.
+
+---
+
+## 6. Backward compatibility
+
+- No signature change for application code. `rate_limit: {max_requests:,
+  period:}` keeps working as-is.
+- Custom adapters need no change: they still expose `rate_limiter=` and call
+  `@rate_limiter&.throttle!` before each HTTP request.
+- `cache: false` restores the exact `0.13.0` behaviour.
+
 # UPGRADING FROM 0.11.3 -> 0.12.0
 
 ## 1. Overview
