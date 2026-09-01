@@ -47,6 +47,11 @@ RSpec.describe Etlify::StaleRecords::Finder do
       end
 
       unless ActiveRecord::Base.connection
+                               .column_exists?(:users, :beacon_id)
+        add_column :users, :beacon_id, :integer
+      end
+
+      unless ActiveRecord::Base.connection
                                .column_exists?(:users, :avatarable_type)
         add_column :users, :avatarable_type, :string
       end
@@ -79,6 +84,32 @@ RSpec.describe Etlify::StaleRecords::Finder do
         t.integer :owner_id
         t.integer :project_id
         t.timestamps null: true
+      end
+
+      create_table :beacons, force: true do |t|
+        t.string :name
+        t.integer :user_id
+        t.integer :profile_id
+      end
+
+      create_table :beacons_users, id: false, force: true do |t|
+        t.integer :beacon_id
+        t.integer :user_id
+      end
+
+      create_table :chronicles, force: true do |t|
+        t.integer :user_id
+        t.datetime :created_at
+      end
+
+      create_table :labels, force: true do |t|
+        t.integer :tag_id
+        t.timestamps null: true
+      end
+
+      create_table :memberships_tags, id: false, force: true do |t|
+        t.integer :membership_id
+        t.integer :tag_id
       end
 
       create_table :subscriptions, force: true do |t|
@@ -136,9 +167,23 @@ RSpec.describe Etlify::StaleRecords::Finder do
       klass.belongs_to :project
     end
 
+    define_model_const("Beacon") do |klass|
+      klass.belongs_to :user, optional: true
+      klass.belongs_to :profile, optional: true
+    end
+
+    define_model_const("Chronicle") do |klass|
+      klass.belongs_to :user, optional: true
+    end
+
     define_model_const("Photo")
     define_model_const("Document")
-    define_model_const("Tag")
+    define_model_const("Tag") do |klass|
+      klass.has_many :labels, dependent: :destroy
+    end
+    define_model_const("Label") do |klass|
+      klass.belongs_to :tag, optional: true
+    end
 
     define_model_const("Subscription") do |klass|
       klass.belongs_to :profile,
@@ -154,11 +199,26 @@ RSpec.describe Etlify::StaleRecords::Finder do
       klass.belongs_to :followee, class_name: "User", optional: false
     end
 
+    Membership.class_eval do
+      has_and_belongs_to_many :tags, join_table: "memberships_tags"
+      has_many :labels, through: :tags
+    end
+
+    Project.class_eval do
+      has_many :memberships, dependent: :destroy
+    end
+
+    Membership.class_eval do
+      has_many :sibling_memberships, through: :project, source: :memberships
+    end
+
     Profile.class_eval do
+      has_many :beacons, dependent: :destroy
       has_many :subscriptions,
                class_name: "Subscription",
                foreign_key: "users_profile_id",
                dependent: :destroy
+      has_many :uploads, as: :owner, dependent: :destroy
     end
 
     # Extend User with associations needed by tests
@@ -174,10 +234,23 @@ RSpec.describe Etlify::StaleRecords::Finder do
       has_many :linkages, as: :owner, dependent: :destroy
       has_many :poly_projects, through: :linkages, source: :project
       has_many :subscriptions, through: :profile
+      has_many :profile_uploads, through: :profile, source: :uploads
       has_many :follows, class_name: "Follow",
                          foreign_key: "follower_id",
                          dependent: :destroy
       has_many :followees, through: :follows, source: :followee
+      has_many :membership_labels, through: :memberships, source: :labels
+      belongs_to :beacon, optional: true
+      has_many :beacons, dependent: :destroy
+      has_many :chronicles, dependent: :destroy
+      has_many :profile_beacons, through: :profile, source: :beacons
+      has_and_belongs_to_many :linked_beacons,
+                              class_name: "Beacon",
+                              join_table: "beacons_users",
+                              association_foreign_key: "beacon_id"
+      has_many :sibling_memberships,
+               through: :memberships,
+               source: :sibling_memberships
     end
   end
 
@@ -1148,6 +1221,301 @@ RSpec.describe Etlify::StaleRecords::Finder do
       ids = user_ids_for(:hubspot)
       expect(ids).to include(marketplace_user.id)
       expect(ids).not_to include(other_user.id)
+    end
+  end
+  # ------- has_many :through with a polymorphic has_many source -------------
+
+  describe "has_many :through with a polymorphic has_many source" do
+    def stub_profile_uploads_dependency
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :id, value: :id},
+            crm_object_type: "contacts",
+            dependencies: [:profile_uploads],
+          },
+        }
+      )
+    end
+
+    it "flags the user when a source row owned by the through record changes" do
+      stub_profile_uploads_dependency
+      user = User.create!(email: "poly-hit@b.c")
+      profile = Profile.create!(user: user)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      Upload.create!(owner: profile, updated_at: now + 20)
+
+      expect(user_ids_for(:hubspot)).to include(user.id)
+    end
+
+    it "ignores a source row of another type sharing the same id" do
+      stub_profile_uploads_dependency
+      user = User.create!(email: "poly-miss@b.c")
+      profile = Profile.create!(user: user)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      Upload.create!(
+        owner_type: "Photo",
+        owner_id: profile.id,
+        updated_at: now + 20
+      )
+
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+    end
+
+    it "still flags the user when the source is not polymorphic" do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :id, value: :id},
+            crm_object_type: "contacts",
+            dependencies: [:subscriptions],
+          },
+        }
+      )
+      user = User.create!(email: "non-poly@b.c")
+      profile = Profile.create!(user: user)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      Subscription.create!(profile: profile, updated_at: now + 20)
+
+      expect(user_ids_for(:hubspot)).to include(user.id)
+    end
+  end
+  # ------- Nested has_many :through with a HABTM intermediate ---------------
+
+  describe "nested has_many :through with a HABTM intermediate" do
+    before do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :id, value: :id},
+            crm_object_type: "contacts",
+            dependencies: [:membership_labels],
+          },
+        }
+      )
+    end
+
+    def user_with_label
+      user = User.create!(email: "habtm-nested-#{SecureRandom.hex(4)}@b.c")
+      membership = Membership.create!(user: user, project: Project.create!)
+      tag = Tag.create!(name: "t")
+      membership.tags << tag
+      [user, Label.create!(tag: tag, updated_at: now)]
+    end
+
+    it "builds a runnable query instead of raising" do
+      user, = user_with_label
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+
+      expect { user_ids_for(:hubspot) }.not_to raise_error
+    end
+
+    it "flags the user when a label behind the HABTM changes" do
+      user, label = user_with_label
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      label.update!(updated_at: now + 20)
+
+      expect(user_ids_for(:hubspot)).to include(user.id)
+    end
+
+    it "does not flag the user when every label predates the sync" do
+      user, = user_with_label
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+    end
+
+    it "does not flag a user whose membership carries no tag" do
+      user, = user_with_label
+      other = User.create!(email: "habtm-untagged@b.c")
+      Membership.create!(user: other, project: Project.create!)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      create_sync!(other, crm: :hubspot, last_synced_at: now + 10)
+
+      expect(user_ids_for(:hubspot)).not_to include(other.id)
+    end
+  end
+  # ------- Dependencies whose target has no usable timestamp column --------
+
+  describe "dependencies without an updated_at column" do
+    def stub_dependency(name)
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :id, value: :id},
+            crm_object_type: "contacts",
+            dependencies: [name],
+          },
+        }
+      )
+    end
+
+    def synced_user
+      user = User.create!(email: "no-ts-#{SecureRandom.hex(4)}@b.c", updated_at: now)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      user
+    end
+
+    it "ignores a belongs_to dependency on a table without timestamps" do
+      stub_dependency(:beacon)
+      user = synced_user
+      user.update_columns(beacon_id: Beacon.create!(name: "b").id)
+
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+    end
+
+    it "ignores a has_many dependency on a table without timestamps" do
+      stub_dependency(:beacons)
+      user = synced_user
+      Beacon.create!(name: "b", user: user)
+
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+    end
+
+    it "ignores a HABTM dependency on a table without timestamps" do
+      stub_dependency(:linked_beacons)
+      user = synced_user
+      user.linked_beacons << Beacon.create!(name: "b")
+
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+    end
+
+    it "ignores a :through dependency on a table without timestamps" do
+      stub_dependency(:profile_beacons)
+      user = synced_user
+      Beacon.create!(name: "b", profile: Profile.create!(user: user))
+
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+    end
+
+    it "falls back to created_at when the dependency has no updated_at" do
+      stub_dependency(:chronicles)
+      user = synced_user
+      Chronicle.create!(user: user, created_at: now + 20)
+
+      expect(user_ids_for(:hubspot)).to include(user.id)
+    end
+
+    it "treats an owner without any timestamp column as always stale" do
+      allow(Beacon).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :id, value: :id},
+            crm_object_type: "beacons",
+          },
+        }
+      )
+      beacon = Beacon.create!(name: "orphan")
+
+      ids = described_class.call(models: [Beacon], crm_name: :hubspot)
+                           .dig(Beacon, :hubspot)
+                           .pluck(:id)
+
+      expect(ids).to include(beacon.id)
+    end
+  end
+
+  # ------- Models that carry no etlify configuration -----------------------
+
+  describe "models without an etlify configuration" do
+    it "skips a model that does not respond to etlify_crms" do
+      expect(described_class.call(models: [Profile])).to eq({})
+    end
+  end
+
+  # ------- Nested :through whose target table is aliased by Rails ----------
+
+  describe "nested :through whose target table repeats in the chain" do
+    before do
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :id, value: :id},
+            crm_object_type: "contacts",
+            dependencies: [:sibling_memberships],
+          },
+        }
+      )
+    end
+
+    it "flags the user when a membership sharing its project changes" do
+      project = Project.create!
+      user = User.create!(email: "sibling@b.c")
+      Membership.create!(user: user, project: project, updated_at: now)
+      sibling = Membership.create!(
+        user: User.create!(email: "other-sibling@b.c"),
+        project: project,
+        updated_at: now
+      )
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+      sibling.update!(updated_at: now + 20)
+
+      expect(user_ids_for(:hubspot)).to include(user.id)
+    end
+
+    it "does not flag the user when no sibling membership changed" do
+      project = Project.create!
+      user = User.create!(email: "sibling-quiet@b.c")
+      Membership.create!(user: user, project: project, updated_at: now)
+      create_sync!(user, crm: :hubspot, last_synced_at: now + 10)
+
+      expect(user_ids_for(:hubspot)).not_to include(user.id)
+    end
+  end
+
+  # ------- Adapter-specific SQL fragments ----------------------------------
+
+  describe "adapter-specific SQL fragments" do
+    let(:postgres) { instance_double(ActiveRecord::ConnectionAdapters::AbstractAdapter, adapter_name: "PostgreSQL") }
+    let(:sqlite) { instance_double(ActiveRecord::ConnectionAdapters::AbstractAdapter, adapter_name: "SQLite") }
+
+    it "casts the epoch on PostgreSQL and uses DATETIME elsewhere" do
+      expect(described_class.send(:epoch_arel, postgres).to_sql)
+        .to include("CAST")
+      expect(described_class.send(:epoch_arel, sqlite).to_sql)
+        .to include("DATETIME")
+    end
+
+    it "picks GREATEST on PostgreSQL and MAX elsewhere" do
+      expect(described_class.send(:greatest_function_name, postgres))
+        .to eq("GREATEST")
+      expect(described_class.send(:greatest_function_name, sqlite))
+        .to eq("MAX")
+    end
+
+    it "writes the epoch literal per adapter" do
+      expect(described_class.send(:epoch_literal, postgres))
+        .to eq("TIMESTAMP '1970-01-01 00:00:00'")
+      expect(described_class.send(:epoch_literal, sqlite))
+        .to eq("DATETIME('1970-01-01 00:00:00')")
+    end
+  end
+
+  # ------- Unparseable join SQL --------------------------------------------
+
+  describe "when ActiveRecord join SQL cannot be parsed" do
+    it "falls back to the epoch literal instead of raising" do
+      conn = ActiveRecord::Base.connection
+      relation = instance_double(ActiveRecord::Relation, to_sql: "SELECT 1")
+      allow(relation).to receive(:joins).and_return(relation)
+      allow(relation).to receive(:where).and_return(relation)
+      model = double(table_name: "users", unscoped: relation, primary_key: "id")
+
+      sql = described_class.send(
+        :through_via_activerecord_sql,
+        model,
+        User.reflect_on_association(:membership_labels),
+        "updated_at",
+        conn
+      )
+
+      expect(sql).to eq(described_class.send(:epoch_literal, conn))
     end
   end
 end

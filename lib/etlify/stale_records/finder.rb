@@ -348,13 +348,13 @@ module Etlify
             return epoch_literal(conn)
           end
 
-          # Extract the target table alias from the joins
-          # Look for the last occurrence of the target table (it's the final one in the chain)
-          target_alias = nil
+          # The chain's target is the last occurrence of its table. Rails
+          # aliases repeated tables, and it is often an earlier hop that gets
+          # the alias while the target itself stays bare.
+          target_alias = target_tbl
           joins_sql.scan(/"#{Regexp.escape(target_tbl)}"(?:\s+(?:AS\s+)?"([^"]+)")?/) do |match|
-            target_alias = match[0] if match[0]
+            target_alias = match[0] || target_tbl
           end
-          target_alias ||= target_tbl
 
           # Create an alias for the owner table in the subquery to avoid conflicts
           # The outer query references "users"."id", so we need to use a different reference
@@ -393,9 +393,9 @@ module Etlify
           ts_col     = dep_timestamp_column(reflection.klass)
           return epoch_literal(conn) unless ts_col
 
-          # If the 'through' is itself a has_many :through, use ActiveRecord
-          # to build the join SQL automatically
-          if through.through_reflection
+          # Chains with more than one intermediate table need more joins than
+          # this method emits: let ActiveRecord build them.
+          if through.through_reflection || source.try(:through_reflection)
             return through_via_activerecord_sql(model, reflection, ts_col, conn)
           end
 
@@ -427,74 +427,47 @@ module Etlify
                                       "#{qc(conn, "#{as}_type")} = #{conn.quote(model.name)}"
           end
 
-          # Nested through on the source side
-          nested_through = source.try(:through_reflection)
-          if nested_through
-            join_tbl       = nested_through.klass.table_name
-            join_pk_to_thr = nested_through.foreign_key
+          through_pk =
+            through.options[:primary_key] || through.klass.primary_key
 
-            # Find the real FK from the join model to target klass, or fallback.
-            join_fk_to_src =
-              fk_from_join_to_target_klass(nested_through.klass, reflection.klass) ||
-              "#{source.name.to_s.singularize}_id"
-
-            <<-SQL.squish
-              COALESCE((
-                SELECT MAX(#{q_alias(conn, src_alias)}.#{qc(conn, ts_col)})
-                FROM #{qt(conn, through_tbl)}
-                INNER JOIN #{qt(conn, join_tbl)}
-                  ON #{qt(conn, join_tbl)}.#{qc(conn, join_pk_to_thr)} =
-                    #{qt(conn, through_tbl)}.#{qc(conn, through.klass.primary_key)}
-                INNER JOIN #{aliased_table(conn, source_tbl, src_alias)}
-                  ON #{q_alias(conn, src_alias)}.
-                      #{qc(conn, reflection.klass.primary_key)} =
-                    #{qt(conn, join_tbl)}.#{qc(conn, join_fk_to_src)}
-                WHERE #{owner_to_through_preds.map { |p| "(#{p})" }.join(' AND ')}
-              ), #{epoch_literal(conn)})
-            SQL
-          else
-            # Simple (non-nested) :through
-            through_pk =
-              through.options[:primary_key] || through.klass.primary_key
-
-            if source.macro == :belongs_to
-              src_pk = source.options[:primary_key] || reflection.klass.primary_key
-              src_fk = source.foreign_key
-              join_preds = [
-                "#{q_alias(conn, src_alias)}.#{qc(conn, src_pk)} = " \
-                "#{qt(conn, through_tbl)}.#{qc(conn, src_fk)}",
-              ]
-              # Polymorphic source type filter (e.g. owner_type = 'Users::Profile')
-              if source.options[:polymorphic] && reflection.options[:source_type]
-                join_preds << "#{qt(conn, through_tbl)}." \
-                              "#{qc(conn, "#{source.name}_type")} = " \
-                              "#{conn.quote(reflection.options[:source_type])}"
-              end
-              join_on = join_preds.map { |p| "(#{p})" }.join(" AND ")
-            else
-              src_fk =
-                source.foreign_key ||
-                reflection.options[:foreign_key] ||
-                reflection.klass
-                          .reflections
-                          .dig(source.name.to_s)&.foreign_key ||
-                source.foreign_key
-
-              join_on =
-                "#{q_alias(conn, src_alias)}.#{qc(conn, src_fk)} = " \
-                "#{qt(conn, through_tbl)}.#{qc(conn, through_pk)}"
+          if source.macro == :belongs_to
+            src_pk = source.options[:primary_key] || reflection.klass.primary_key
+            src_fk = source.foreign_key
+            join_preds = [
+              "#{q_alias(conn, src_alias)}.#{qc(conn, src_pk)} = " \
+              "#{qt(conn, through_tbl)}.#{qc(conn, src_fk)}",
+            ]
+            # Polymorphic source type filter (e.g. owner_type = 'Users::Profile')
+            if source.options[:polymorphic] && reflection.options[:source_type]
+              join_preds << "#{qt(conn, through_tbl)}." \
+                            "#{qc(conn, "#{source.name}_type")} = " \
+                            "#{conn.quote(reflection.options[:source_type])}"
             end
+            join_on = join_preds.map { |p| "(#{p})" }.join(" AND ")
+          else
+            join_on =
+              "#{q_alias(conn, src_alias)}.#{qc(conn, source.foreign_key)} = " \
+              "#{qt(conn, through_tbl)}.#{qc(conn, through_pk)}"
 
-            <<-SQL.squish
-              COALESCE((
-                SELECT MAX(#{q_alias(conn, src_alias)}.#{qc(conn, ts_col)})
-                FROM #{qt(conn, through_tbl)}
-                INNER JOIN #{aliased_table(conn, source_tbl, src_alias)}
-                  ON #{join_on}
-                WHERE #{owner_to_through_preds.map { |p| "(#{p})" }.join(' AND ')}
-              ), #{epoch_literal(conn)})
-            SQL
+            # The polymorphic column sits on the source table and stores the
+            # through model's name, not the owner's.
+            if (as = source.options[:as])
+              join_on +=
+                " AND #{q_alias(conn, src_alias)}." \
+                "#{qc(conn, "#{as}_type")} = " \
+                "#{conn.quote(through.klass.polymorphic_name)}"
+            end
           end
+
+          <<-SQL.squish
+            COALESCE((
+              SELECT MAX(#{q_alias(conn, src_alias)}.#{qc(conn, ts_col)})
+              FROM #{qt(conn, through_tbl)}
+              INNER JOIN #{aliased_table(conn, source_tbl, src_alias)}
+                ON #{join_on}
+              WHERE #{owner_to_through_preds.map { |p| "(#{p})" }.join(' AND ')}
+            ), #{epoch_literal(conn)})
+          SQL
         end
 
         # ----------------------------- Helpers -----------------------------
@@ -519,15 +492,6 @@ module Etlify
 
         def aliased_table(conn, table_name, alias_name)
           "#{qt(conn, table_name)} AS #{q_alias(conn, alias_name)}"
-        end
-
-        def fk_from_join_to_target_klass(join_klass, target_klass)
-          # Cherche un belongs_to sur le join pointant vers la classe cible,
-          # retourne sa foreign_key s’il existe (ex: :suitability_questionnaire_id)
-          refl = join_klass.reflections.values.find do |r|
-            r.macro == :belongs_to && r.klass == target_klass
-          end
-          refl&.foreign_key
         end
 
         # Pick a timestamp column for a given ActiveRecord class.
