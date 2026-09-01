@@ -1,3 +1,108 @@
+# UPGRADING FROM 0.14.0 -> 0.15.0
+
+## 1. Overview
+
+No API change. Three bug fixes in `Etlify::StaleRecords::Finder`, all on
+`:through` dependencies. Nothing to configure, but two of them change which
+records the Finder returns, so plan for a first run that reports more or fewer
+stale records than the previous version did.
+
+1. A `has_many :through` whose **source is polymorphic** was joined on the
+   foreign key alone, with no type predicate. It matched rows of every owner
+   type sharing that id, and it could not use the `(owner_type, owner_id)`
+   index.
+2. A nested `:through` whose **intermediate is a HABTM** raised
+   `PG::UndefinedColumn`. Since the discovery relation is built for every model
+   in one pass, that aborted the entire run.
+3. When a table **repeats in a chain**, `MAX(timestamp)` was read from an
+   intermediate hop instead of the dependency.
+
+---
+
+## 2. Database migrations
+
+No database migration required for this upgrade.
+
+If you added a **single-column index** to work around the missing type
+predicate — typically `(dependency_id, updated_at)` on a polymorphic table
+whose only other index is `(dependency_type, dependency_id)` — it becomes
+redundant once the predicate is emitted, because the composite index is now
+usable.
+
+Drop it **after** deploying `0.15.0` and confirming the new plan, never before:
+
+```sql
+EXPLAIN ANALYZE <the Finder subquery>;  -- expect an index scan on (type, id)
+```
+
+```ruby
+class RemoveEtlifyWorkaroundIndex < ActiveRecord::Migration[7.2]
+  disable_ddl_transaction!
+
+  def change
+    remove_index(
+      :payment_operations,
+      column: [:owner_id, :updated_at],
+      algorithm: :concurrently
+    )
+  end
+end
+```
+
+---
+
+## 3. Configuration changes
+
+Nothing to change.
+
+A nested `:through` whose intermediate is a HABTM used to raise, so you may
+have left such a dependency **out** of `dependencies:` to keep the Finder
+running. It can be declared now:
+
+```ruby
+airtable_etlified_with(
+  serializer: MyDictionary,
+  crm_object_type: "tblXXXX",
+  match_by: {property: "Email", value: :email},
+  dependencies: [
+    :memberships,
+    :products, # User -> memberships -> HABTM offers -> discounts -> products
+  ]
+)
+```
+
+---
+
+## 4. Expected behaviour after upgrading
+
+- **Fewer false positives.** A polymorphic source no longer matches rows of
+  another type sharing the same id, so owners previously reported stale by an
+  unrelated record stop being enqueued.
+- **Faster discovery.** On a large polymorphic dependency table, the subquery
+  moves from a sequential scan to an index scan. Measured on 24 708 owners and
+  726 411 dependency rows: **9.5 s to 91 ms** for one subquery.
+- **The run no longer aborts.** A nested `:through` over a HABTM is built by
+  ActiveRecord instead of by hand, so it stops raising and taking every other
+  model down with it.
+- **Correct timestamps on repeating chains.** Where a table appears twice, the
+  dependency's own timestamp is read, not the intermediate's. Records whose real
+  dependency changed while the intermediate stayed put are detected for the
+  first time, so expect a one-off catch-up batch.
+- Nested chains with a single intermediate table produce **the same SQL** as
+  before. Non-polymorphic sources are unchanged.
+
+---
+
+## 5. Backward compatibility
+
+- No public API change, no DSL change, no migration.
+- The `:through` SQL is generated internally; no application code should be
+  reading it.
+- Applications with no polymorphic source, no HABTM in a nested chain and no
+  repeating table see identical behaviour.
+
+---
+
 # UPGRADING FROM 0.13.0 -> 0.14.0
 
 ## 1. Overview
