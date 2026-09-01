@@ -246,61 +246,45 @@ module Etlify
         def direct_dependency_timestamp_arel(model, reflection, conn)
           owner_arel = arel_table(model)
           ts_col = dep_timestamp_column(reflection.klass)
+          return epoch_arel(conn) unless ts_col
 
-          case reflection.macro
-          when :belongs_to
-            return epoch_arel(conn) unless ts_col
+          dep_arel = reflection.klass.arel_table
 
-            dep_arel = reflection.klass.arel_table
+          # The dispatcher routes polymorphic belongs_to, :through and HABTM
+          # away, so only belongs_to, has_one and has_many reach this point.
+          sub =
+            if reflection.macro == :belongs_to
+              # Respect custom primary_key on the target.
+              dep_pk =
+                reflection.options[:primary_key] ||
+                reflection.klass.primary_key
 
-            # Respect custom primary_key on the target.
-            dep_pk =
-              reflection.options[:primary_key] ||
-              reflection.klass.primary_key
-
-            fk = reflection.foreign_key
-
-            sub =
               dep_arel
-              .project(dep_arel[ts_col])
-              .where(dep_arel[dep_pk].eq(owner_arel[fk]))
-              .take(1)
+                .project(dep_arel[ts_col])
+                .where(dep_arel[dep_pk].eq(owner_arel[reflection.foreign_key]))
+                .take(1)
+            else
+              preds = [
+                dep_arel[reflection.foreign_key]
+                  .eq(owner_arel[model.primary_key]),
+              ]
 
-            Arel::Nodes::NamedFunction.new(
-              fn_coalesce(conn),
-              [Arel::Nodes::Grouping.new(sub), epoch_arel(conn)]
-            )
+              # Respect polymorphic :as on the dependency if present.
+              if (poly_as = reflection.options[:as])
+                preds << dep_arel["#{poly_as}_type"].eq(model.name)
+              end
 
-          when :has_one, :has_many
-            return epoch_arel(conn) unless ts_col
-
-            dep_arel = reflection.klass.arel_table
-
-            # Use foreign_key on dependency pointing to owner primary key.
-            fk = reflection.foreign_key
-
-            preds = [dep_arel[fk].eq(owner_arel[model.primary_key])]
-
-            # Respect polymorphic :as on the dependency if present.
-            if (poly_as = reflection.options[:as])
-              preds << dep_arel["#{poly_as}_type"].eq(model.name)
+              dep_arel
+                .project(
+                  Arel::Nodes::NamedFunction.new("MAX", [dep_arel[ts_col]])
+                )
+                .where(preds.reduce(&:and))
             end
 
-            sub =
-              dep_arel
-              .project(
-                Arel::Nodes::NamedFunction.new("MAX", [dep_arel[ts_col]])
-              )
-              .where(preds.reduce(&:and))
-
-            Arel::Nodes::NamedFunction.new(
-              fn_coalesce(conn),
-              [Arel::Nodes::Grouping.new(sub), epoch_arel(conn)]
-            )
-
-          else
-            epoch_arel(conn)
-          end
+          Arel::Nodes::NamedFunction.new(
+            fn_coalesce(conn),
+            [Arel::Nodes::Grouping.new(sub), epoch_arel(conn)]
+          )
         end
 
         # ----------------------------- HABTM -------------------------------
@@ -549,8 +533,6 @@ module Etlify
         # Pick a timestamp column for a given ActiveRecord class.
         # Prefer "updated_at", fallback to "created_at", else nil.
         def dep_timestamp_column(klass)
-          return nil unless klass.respond_to?(:column_names)
-
           cols = klass.column_names
           return "updated_at" if cols.include?("updated_at")
           return "created_at" if cols.include?("created_at")
