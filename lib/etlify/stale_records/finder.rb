@@ -95,9 +95,10 @@ module Etlify
           query_class = sti_subclass?(model) ? model.base_class : model
 
           join_on =
-            crm_arel[:resource_type].eq(model.name)
-              .and(crm_arel[:resource_id].eq(owner_arel[model.primary_key]))
-              .and(crm_arel[:crm_name].eq(crm_name.to_s))
+            crm_arel[:resource_type]
+            .eq(model.name)
+            .and(crm_arel[:resource_id].eq(owner_arel[model.primary_key]))
+            .and(crm_arel[:crm_name].eq(crm_name.to_s))
 
           join_sql = owner_arel.create_join(
             crm_arel, owner_arel.create_on(join_on), Arel::Nodes::OuterJoin
@@ -124,12 +125,13 @@ module Etlify
             "#{conn.quote_column_name(model.primary_key)}"
 
           inner_rel =
-            query_class.unscoped
-                .from(owner_arel)
-                .joins(join_sql)
-                .where(where_pred)
-                .select(Arel.sql("#{qualified_pk_sql} AS id"))
-                .reorder(Arel.sql("#{qualified_pk_sql} ASC"))
+            query_class
+            .unscoped
+            .from(owner_arel)
+            .joins(join_sql)
+            .where(where_pred)
+            .select(Arel.sql("#{qualified_pk_sql} AS id"))
+            .reorder(Arel.sql("#{qualified_pk_sql} ASC"))
 
           # Add STI type filter on the inner query where the real table is
           # accessible, rather than letting Rails add it on the outer query.
@@ -147,10 +149,12 @@ module Etlify
           sub_from  = Arel.sql("(#{sub_sql}) AS #{tbl_alias}")
 
           # Keep a single id column and stable order.
-          outer = query_class.unscoped
-              .from(sub_from)
-              .select("id")
-              .reorder("id ASC")
+          outer =
+            query_class
+            .unscoped
+            .from(sub_from)
+            .select("id")
+            .reorder("id ASC")
 
           # Apply stale_scope if configured to restrict which records the Finder
           # considers. This avoids scanning records that sync_if would skip anyway,
@@ -242,61 +246,45 @@ module Etlify
         def direct_dependency_timestamp_arel(model, reflection, conn)
           owner_arel = arel_table(model)
           ts_col = dep_timestamp_column(reflection.klass)
+          return epoch_arel(conn) unless ts_col
 
-          case reflection.macro
-          when :belongs_to
-            return epoch_arel(conn) unless ts_col
+          dep_arel = reflection.klass.arel_table
 
-            dep_arel = reflection.klass.arel_table
+          # The dispatcher routes polymorphic belongs_to, :through and HABTM
+          # away, so only belongs_to, has_one and has_many reach this point.
+          sub =
+            if reflection.macro == :belongs_to
+              # Respect custom primary_key on the target.
+              dep_pk =
+                reflection.options[:primary_key] ||
+                reflection.klass.primary_key
 
-            # Respect custom primary_key on the target.
-            dep_pk =
-              reflection.options[:primary_key] ||
-              reflection.klass.primary_key
-
-            fk = reflection.foreign_key
-
-            sub =
               dep_arel
                 .project(dep_arel[ts_col])
-                .where(dep_arel[dep_pk].eq(owner_arel[fk]))
+                .where(dep_arel[dep_pk].eq(owner_arel[reflection.foreign_key]))
                 .take(1)
+            else
+              preds = [
+                dep_arel[reflection.foreign_key]
+                  .eq(owner_arel[model.primary_key]),
+              ]
 
-            Arel::Nodes::NamedFunction.new(
-              fn_coalesce(conn),
-              [Arel::Nodes::Grouping.new(sub), epoch_arel(conn)]
-            )
+              # Respect polymorphic :as on the dependency if present.
+              if (poly_as = reflection.options[:as])
+                preds << dep_arel["#{poly_as}_type"].eq(model.name)
+              end
 
-          when :has_one, :has_many
-            return epoch_arel(conn) unless ts_col
-
-            dep_arel = reflection.klass.arel_table
-
-            # Use foreign_key on dependency pointing to owner primary key.
-            fk = reflection.foreign_key
-
-            preds = [dep_arel[fk].eq(owner_arel[model.primary_key])]
-
-            # Respect polymorphic :as on the dependency if present.
-            if (poly_as = reflection.options[:as])
-              preds << dep_arel["#{poly_as}_type"].eq(model.name)
-            end
-
-            sub =
               dep_arel
                 .project(
                   Arel::Nodes::NamedFunction.new("MAX", [dep_arel[ts_col]])
                 )
                 .where(preds.reduce(&:and))
+            end
 
-            Arel::Nodes::NamedFunction.new(
-              fn_coalesce(conn),
-              [Arel::Nodes::Grouping.new(sub), epoch_arel(conn)]
-            )
-
-          else
-            epoch_arel(conn)
-          end
+          Arel::Nodes::NamedFunction.new(
+            fn_coalesce(conn),
+            [Arel::Nodes::Grouping.new(sub), epoch_arel(conn)]
+          )
         end
 
         # ----------------------------- HABTM -------------------------------
@@ -360,13 +348,13 @@ module Etlify
             return epoch_literal(conn)
           end
 
-          # Extract the target table alias from the joins
-          # Look for the last occurrence of the target table (it's the final one in the chain)
-          target_alias = nil
+          # The chain's target is the last occurrence of its table. Rails
+          # aliases repeated tables, and it is often an earlier hop that gets
+          # the alias while the target itself stays bare.
+          target_alias = target_tbl
           joins_sql.scan(/"#{Regexp.escape(target_tbl)}"(?:\s+(?:AS\s+)?"([^"]+)")?/) do |match|
-            target_alias = match[0] if match[0]
+            target_alias = match[0] || target_tbl
           end
-          target_alias ||= target_tbl
 
           # Create an alias for the owner table in the subquery to avoid conflicts
           # The outer query references "users"."id", so we need to use a different reference
@@ -405,9 +393,9 @@ module Etlify
           ts_col     = dep_timestamp_column(reflection.klass)
           return epoch_literal(conn) unless ts_col
 
-          # If the 'through' is itself a has_many :through, use ActiveRecord
-          # to build the join SQL automatically
-          if through.through_reflection
+          # Chains with more than one intermediate table need more joins than
+          # this method emits: let ActiveRecord build them.
+          if through.through_reflection || source.try(:through_reflection)
             return through_via_activerecord_sql(model, reflection, ts_col, conn)
           end
 
@@ -439,75 +427,47 @@ module Etlify
                                       "#{qc(conn, "#{as}_type")} = #{conn.quote(model.name)}"
           end
 
-          # Nested through on the source side
-          nested_through = source.try(:through_reflection)
-          if nested_through
-            join_tbl       = nested_through.klass.table_name
-            join_pk_to_thr = nested_through.foreign_key
+          through_pk =
+            through.options[:primary_key] || through.klass.primary_key
 
-            # Find the real FK from the join model to target klass, or fallback.
-            join_fk_to_src =
-              fk_from_join_to_target_klass(nested_through.klass, reflection.klass) ||
-              "#{source.name.to_s.singularize}_id"
-
-            <<-SQL.squish
-              COALESCE((
-                SELECT MAX(#{q_alias(conn, src_alias)}.#{qc(conn, ts_col)})
-                FROM #{qt(conn, through_tbl)}
-                INNER JOIN #{qt(conn, join_tbl)}
-                  ON #{qt(conn, join_tbl)}.#{qc(conn, join_pk_to_thr)} =
-                    #{qt(conn, through_tbl)}.#{qc(conn, through.klass.primary_key)}
-                INNER JOIN #{aliased_table(conn, source_tbl, src_alias)}
-                  ON #{q_alias(conn, src_alias)}.
-                      #{qc(conn, reflection.klass.primary_key)} =
-                    #{qt(conn, join_tbl)}.#{qc(conn, join_fk_to_src)}
-                WHERE #{owner_to_through_preds.map { |p| "(#{p})" }.join(" AND ")}
-              ), #{epoch_literal(conn)})
-            SQL
-          else
-            # Simple (non-nested) :through
-            through_pk =
-              through.options[:primary_key] || through.klass.primary_key
-
-            if source.macro == :belongs_to
-              src_pk = source.options[:primary_key] || reflection.klass.primary_key
-              src_fk = source.foreign_key
-              join_preds = [
-                "#{q_alias(conn, src_alias)}.#{qc(conn, src_pk)} = " \
-                "#{qt(conn, through_tbl)}.#{qc(conn, src_fk)}",
-              ]
-              # Polymorphic source type filter (e.g. owner_type = 'Users::Profile')
-              if source.options[:polymorphic] && reflection.options[:source_type]
-                join_preds << "#{qt(conn, through_tbl)}." \
-                              "#{qc(conn, "#{source.name}_type")} = " \
-                              "#{conn.quote(reflection.options[:source_type])}"
-              end
-              join_on = join_preds.map { |p| "(#{p})" }.join(" AND ")
-            else
-              src_fk =
-                source.foreign_key ||
-                reflection.options[:foreign_key] ||
-                reflection
-                  .klass
-                  .reflections
-                  .dig(source.name.to_s)&.foreign_key ||
-                source.foreign_key
-
-              join_on =
-                "#{q_alias(conn, src_alias)}.#{qc(conn, src_fk)} = " \
-                "#{qt(conn, through_tbl)}.#{qc(conn, through_pk)}"
+          if source.macro == :belongs_to
+            src_pk = source.options[:primary_key] || reflection.klass.primary_key
+            src_fk = source.foreign_key
+            join_preds = [
+              "#{q_alias(conn, src_alias)}.#{qc(conn, src_pk)} = " \
+              "#{qt(conn, through_tbl)}.#{qc(conn, src_fk)}",
+            ]
+            # Polymorphic source type filter (e.g. owner_type = 'Users::Profile')
+            if source.options[:polymorphic] && reflection.options[:source_type]
+              join_preds << "#{qt(conn, through_tbl)}." \
+                            "#{qc(conn, "#{source.name}_type")} = " \
+                            "#{conn.quote(reflection.options[:source_type])}"
             end
+            join_on = join_preds.map { |p| "(#{p})" }.join(" AND ")
+          else
+            join_on =
+              "#{q_alias(conn, src_alias)}.#{qc(conn, source.foreign_key)} = " \
+              "#{qt(conn, through_tbl)}.#{qc(conn, through_pk)}"
 
-            <<-SQL.squish
-              COALESCE((
-                SELECT MAX(#{q_alias(conn, src_alias)}.#{qc(conn, ts_col)})
-                FROM #{qt(conn, through_tbl)}
-                INNER JOIN #{aliased_table(conn, source_tbl, src_alias)}
-                  ON #{join_on}
-                WHERE #{owner_to_through_preds.map { |p| "(#{p})" }.join(" AND ")}
-              ), #{epoch_literal(conn)})
-            SQL
+            # The polymorphic column sits on the source table and stores the
+            # through model's name, not the owner's.
+            if (as = source.options[:as])
+              join_on +=
+                " AND #{q_alias(conn, src_alias)}." \
+                "#{qc(conn, "#{as}_type")} = " \
+                "#{conn.quote(through.klass.polymorphic_name)}"
+            end
           end
+
+          <<-SQL.squish
+            COALESCE((
+              SELECT MAX(#{q_alias(conn, src_alias)}.#{qc(conn, ts_col)})
+              FROM #{qt(conn, through_tbl)}
+              INNER JOIN #{aliased_table(conn, source_tbl, src_alias)}
+                ON #{join_on}
+              WHERE #{owner_to_through_preds.map { |p| "(#{p})" }.join(' AND ')}
+            ), #{epoch_literal(conn)})
+          SQL
         end
 
         # ----------------------------- Helpers -----------------------------
@@ -534,23 +494,13 @@ module Etlify
           "#{qt(conn, table_name)} AS #{q_alias(conn, alias_name)}"
         end
 
-        def fk_from_join_to_target_klass(join_klass, target_klass)
-          # Cherche un belongs_to sur le join pointant vers la classe cible,
-          # retourne sa foreign_key s’il existe (ex: :suitability_questionnaire_id)
-          refl = join_klass.reflections.values.find do |r|
-            r.macro == :belongs_to && r.klass == target_klass
-          end
-          refl&.foreign_key
-        end
-
         # Pick a timestamp column for a given ActiveRecord class.
         # Prefer "updated_at", fallback to "created_at", else nil.
         def dep_timestamp_column(klass)
-          return nil unless klass.respond_to?(:column_names)
-
           cols = klass.column_names
           return "updated_at" if cols.include?("updated_at")
           return "created_at" if cols.include?("created_at")
+
           nil
         end
 
@@ -564,7 +514,7 @@ module Etlify
         # Accepts either a variadic list of Arel nodes or an array.
         def greatest_arel(conn, *parts)
           exprs = parts.flatten.compact
-          return (exprs.first || epoch_arel(conn)) if exprs.length <= 1
+          return exprs.first || epoch_arel(conn) if exprs.length <= 1
 
           Arel::Nodes::NamedFunction.new(greatest_function_name(conn), exprs)
         end
