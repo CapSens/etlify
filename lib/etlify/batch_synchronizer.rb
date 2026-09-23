@@ -86,7 +86,11 @@ module Etlify
 
       # Stale check
       unless sync_line.stale?(digest)
-        sync_line.update!(last_synced_at: Time.current)
+        sync_line.update!(
+          last_synced_at: Time.current,
+          last_error: nil,
+          error_count: 0
+        )
         return [:not_modified, nil]
       end
 

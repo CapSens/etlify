@@ -1,3 +1,78 @@
+# UPGRADING FROM 0.15.0 -> 0.15.1
+
+## 1. Overview
+
+No API change, no configuration change, no migration. One bug fix in the two
+synchronizers: a `:not_modified` result now clears `last_error` and
+`error_count` on the `CrmSynchronisation` row, where it previously only
+touched `last_synced_at`.
+
+Reaching `:not_modified` means the freshly computed digest equals
+`last_digest`, which is only ever written after a successful push. The CRM
+therefore already holds the current payload, and an error recorded before that
+point no longer describes anything. Keeping it had two consequences:
+
+1. The row stayed in `CrmSynchronisation.with_error` forever, inflating every
+   error dashboard with records that were perfectly in sync.
+2. Once `error_count` had reached `max_sync_errors`, `StaleRecords::Finder`
+   excluded the row permanently. Nothing reset the counter on its own, so a
+   record could be dropped from the sync for good after a transient failure it
+   had already recovered from.
+
+The `:skipped` branch (guard returning false) already cleared both fields.
+This aligns `:not_modified` with it.
+
+---
+
+## 2. Database migrations
+
+No database migration required for this upgrade.
+
+---
+
+## 3. Configuration changes
+
+None.
+
+---
+
+## 4. Expected behaviour after upgrading
+
+- **Fewer rows reported in error.** Records whose payload matches what was last
+  pushed stop carrying an obsolete `last_error`. Expect the error count to drop
+  on the first pass over the stale population, without a single CRM call: the
+  branch performs no HTTP request.
+- **No more silent exclusions after a recovery.** A record that failed, then
+  came back to a payload already present on the CRM, now has its counter reset
+  and stays eligible for the Finder.
+- **Rows already past `max_sync_errors` are not recovered by the upgrade
+  alone.** They are excluded from the Finder, so they are never re-evaluated
+  and never reach the fixed branch. Reset them once, after deploying:
+
+  ```ruby
+  CrmSynchronisation
+    .with_error
+    .retry_exhausted(Etlify.config.max_sync_errors)
+    .find_each(&:reset_error_count!)
+  ```
+
+  Scope it down (`where(crm_name:, resource_type:)`, `last_error` matching) if
+  only part of the population is concerned.
+
+---
+
+## 5. Backward compatibility
+
+- No public API change, no DSL change, no adapter change.
+- The `:not_modified` return value, the stats hash of `BatchSynchronizer` and
+  the `last_synced_at` bump are unchanged.
+- Applications that read `last_error` as an audit trail of the last failure,
+  rather than as the current state of the row, will see those entries
+  disappear earlier than before. The information was already lost on the next
+  `:synced` or `:skipped` result.
+
+---
+
 # UPGRADING FROM 0.14.0 -> 0.15.0
 
 ## 1. Overview
