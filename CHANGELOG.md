@@ -1,4 +1,4 @@
-# UNRELEASED
+# V0.15.1
 
 - Fix: A `:not_modified` sync now clears `last_error` and `error_count` instead of only touching `last_synced_at`. Reaching that branch means the digest equals `last_digest`, so the CRM already holds the current payload and an error recorded before it no longer describes anything. Left in place, that error kept the row in `CrmSynchronisation.with_error` forever, and a row whose counter had reached `max_sync_errors` stayed out of `StaleRecords::Finder` for good although nothing was wrong with it, and only an explicit `reset_error_count!` could bring it back. This mirrors the `:skipped` (guard) branch, which already cleared both fields. Measured on Blast's production data, 134 of the 1 122 `Users::Profile` rows reported in error were in exactly that state: in sync with Airtable, but still flagged by a failure that a later `:not_modified` pass never cleaned up. Applies to both `Etlify::Synchronizer` and `Etlify::BatchSynchronizer`.
 
