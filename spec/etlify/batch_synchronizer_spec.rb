@@ -104,6 +104,22 @@ RSpec.describe Etlify::BatchSynchronizer do
       expect(stats[:not_modified]).to eq(1)
     end
 
+    it "clears a stale error on a not_modified record", :aggregate_failures do
+      user = create_user!(index: 1)
+
+      described_class.call([user], crm_name: :hubspot)
+
+      line = CrmSynchronisation.find_by(resource: user, crm_name: "hubspot")
+      line.update!(last_error: "boom", error_count: 3)
+
+      stats = described_class.call([user], crm_name: :hubspot)
+
+      expect(stats[:not_modified]).to eq(1)
+      line.reload
+      expect(line.last_error).to be_nil
+      expect(line.error_count).to eq(0)
+    end
+
     it "does not call batch_upsert! when all records are skipped" do
       allow(User).to receive(:etlify_crms).and_return(
         {

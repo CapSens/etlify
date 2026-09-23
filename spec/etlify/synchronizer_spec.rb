@@ -61,6 +61,25 @@ RSpec.describe Etlify::Synchronizer do
         expect(line.last_synced_at).to be_within(1).of(Time.current)
       end
     end
+
+    it "clears a stale error left by a previous failure",
+       :aggregate_failures do
+      first = described_class.call(user, crm_name: :hubspot)
+      expect(first).to eq(:synced)
+
+      line = sync_lines_for(user).find_by(crm_name: "hubspot")
+      digest = Etlify.config.digest_strategy.call(
+        user.build_crm_payload(crm_name: :hubspot)
+      )
+      line.update!(last_digest: digest, last_error: "boom", error_count: 3)
+
+      expect(described_class.call(user, crm_name: :hubspot))
+        .to eq(:not_modified)
+
+      line.reload
+      expect(line.last_error).to be_nil
+      expect(line.error_count).to eq(0)
+    end
   end
 
   context "argument passing to adapter" do

@@ -79,7 +79,13 @@ module Etlify
 
           :synced
         else
-          sync_line.update!(last_synced_at: Time.current)
+          # The digest matches what was last pushed: the CRM already holds
+          # this payload, so an error recorded before it is obsolete.
+          sync_line.update!(
+            last_synced_at: Time.current,
+            last_error: nil,
+            error_count: 0
+          )
           :not_modified
         end
       end
