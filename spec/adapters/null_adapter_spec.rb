@@ -111,4 +111,16 @@ RSpec.describe Etlify::Adapters::NullAdapter do
       )
     end
   end
+
+  describe "#track_event!" do
+    it "returns true" do
+      expect(
+        described_class.new.track_event!(
+          name: "Inscription",
+          identifier_property: "email",
+          identifier_value: "jane@example.com"
+        )
+      ).to be(true)
+    end
+  end
 end

@@ -24,6 +24,7 @@ Etlify sits beside your app; it does **not** try to own your domain or backgroun
 | Idempotence | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
 | Jobs        | `crm_sync!` enqueues an ActiveJob; batch sync via `BatchSyncJob` | Fits your queue; built-in rate limiting              |
 | Delete      | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
+| Events      | `crm_track_event!` sends an event to the CRM through an `EventJob` | Triggers CRM automations from your app              |
 
 ---
 
@@ -322,6 +323,32 @@ user.crm_sync!(async: false)
 # Inline delete (not enqueued)
 user.hubspot_crm_delete! # or user.#{registered_crm_name}_crm_delete!
 ```
+
+### Track an event
+
+Adapters that implement the optional `track_event!` method (Brevo, Null) can receive events. The record is synced first, then the event is sent using the CRM id stored in `crm_synchronisations`:
+
+```ruby
+# Async by default (enqueues an Etlify::EventJob)
+user.brevo_track_event!(
+  "Inscription",
+  properties: {prenom: user.first_name},  # event properties
+  contact_properties: {},                 # optional contact attributes
+  occurred_at: Time.current               # defaults to the call time
+)
+
+# Run inline (no job)
+user.brevo_track_event!("Inscription", async: false)
+
+# Skip the preliminary sync and identify the contact through match_by
+user.brevo_track_event!("Inscription", sync_first: false)
+```
+
+- When the CRM is disabled, the call returns `true` and nothing is enqueued.
+- With `sync_first: true`, the `sync_if` guard applies as in `crm_sync!`: when it returns false, the call returns `false` and nothing is enqueued.
+- `occurred_at` is converted to ISO 8601 at call time, so a retried job keeps the original date.
+- With `sync_first: true` (default), `Etlify::EventTracker` runs `Etlify::Synchronizer` inline, then sends the event with `identifier_property: "crm_id"`. If the sync does not end with a `crm_id` (`:error`, `:buffered`, `:skipped`), it raises `Etlify::SyncError` and the job retries.
+- `Etlify::EventJob` follows `Etlify::SyncJob`: same queue (`Etlify.config.job_queue_name`), same 15 minutes enqueue lock, same `retry_on StandardError, wait: 1.minute, attempts: 3`. The lock key digests every job argument, `occurred_at` included (`Etlify::EventJob.lock_key`, same approach as `BatchSyncJob.lock_key`), so only the same occurrence enqueued twice within the window is deduplicated.
 
 ### Custom serializer example
 
@@ -894,6 +921,13 @@ module Etlify
       # crm_id. records is an Array of {crm_id:, properties:} hashes; must
       # return an identity Hash {crm_id => crm_id}.
       # def batch_update!(object_type:, records:)
+      # end
+
+      # Optional, enables crm_track_event! / <crm>_track_event!.
+      # identifier_property is "crm_id" (sync_first) or the match_by
+      # property; must return true.
+      # def track_event!(name:, identifier_property:, identifier_value:,
+      #                  properties: {}, contact_properties: {}, occurred_at: nil)
       # end
     end
   end

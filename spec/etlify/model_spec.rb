@@ -48,6 +48,7 @@ RSpec.describe Etlify::Model do
       expect(klass.instance_methods).to include(:hubspot_build_payload)
       expect(klass.instance_methods).to include(:hubspot_sync!)
       expect(klass.instance_methods).to include(:hubspot_delete!)
+      expect(klass.instance_methods).to include(:hubspot_track_event!)
     end
   end
 
@@ -340,6 +341,23 @@ RSpec.describe Etlify::Model do
       expect(inst.seen_del).to eq({crm_name: :hubspot})
     end
 
+    it "delegates track_event helper with crm_name, name and options" do
+      klass = build_including_class do
+        attr_reader :seen_event
+        def crm_track_event!(**kw)
+          @seen_event = kw
+          :tracked
+        end
+      end
+      inst = klass.new
+      expect(
+        inst.hubspot_track_event!("Inscription", properties: {a: 1}, async: false)
+      ).to eq(:tracked)
+      expect(inst.seen_event).to eq(
+        {crm_name: :hubspot, name: "Inscription", properties: {a: 1}, async: false}
+      )
+    end
+
     it "defines registered_crms only if missing" do
       klass = build_including_class do
         # Predefine to assert no overwrite happens.
@@ -610,6 +628,158 @@ RSpec.describe Etlify::Model do
 
         expect(Etlify::Deleter).not_to receive(:call)
         expect(inst.crm_delete!(crm_name: :hubspot)).to be(true)
+      end
+    end
+  end
+
+  describe "#crm_track_event!" do
+    let(:event_adapter) do
+      Class.new do
+        def track_event!(**)
+          true
+        end
+      end.new
+    end
+
+    let(:klass) do
+      adapter = event_adapter
+      build_including_class do
+        attr_reader :id
+        def initialize
+          @id = 42
+        end
+
+        define_singleton_method(:etlify_crms) do
+          {
+            hubspot: {
+              crm_object_type: :contact,
+              match_by: {property: :external_id, value: :external_id},
+              adapter: adapter,
+            },
+          }
+        end
+      end
+    end
+
+    it "requires crm_name" do
+      expect { klass.new.crm_track_event!(name: "Inscription") }.to(
+        raise_error(ArgumentError, "crm_name is required")
+      )
+    end
+
+    it "requires name" do
+      expect { klass.new.crm_track_event!(crm_name: :hubspot, name: " ") }.to(
+        raise_error(ArgumentError, "name is required")
+      )
+    end
+
+    it "enqueues an EventJob with an ISO 8601 occurred_at" do
+      inst = klass.new
+      expect(Etlify::EventJob).to receive(:perform_later).with(
+        klass.name,
+        42,
+        "hubspot",
+        "Inscription",
+        {prenom: "Jane"},
+        {},
+        "2026-10-16T09:00:00Z",
+        true
+      )
+
+      inst.crm_track_event!(
+        crm_name: :hubspot,
+        name: "Inscription",
+        properties: {prenom: "Jane"},
+        occurred_at: Time.utc(2026, 10, 16, 9, 0, 0)
+      )
+    end
+
+    it "defaults occurred_at to the call time" do
+      inst = klass.new
+      travel_to(Time.utc(2026, 10, 16, 9, 0, 0)) do
+        expect(Etlify::EventJob).to receive(:perform_later).with(
+          klass.name, 42, "hubspot", "Inscription", {}, {},
+          "2026-10-16T09:00:00Z", false
+        )
+
+        inst.crm_track_event!(
+          crm_name: :hubspot, name: "Inscription", sync_first: false
+        )
+      end
+    end
+
+    it "runs inline with EventTracker when async: false" do
+      inst = klass.new
+      expect(Etlify::EventTracker).to receive(:call).with(
+        inst,
+        crm_name: :hubspot,
+        name: "Inscription",
+        properties: {},
+        contact_properties: {},
+        occurred_at: "2026-10-16T09:00:00Z",
+        sync_first: true
+      ).and_return(:tracked)
+
+      expect(
+        inst.crm_track_event!(
+          crm_name: :hubspot,
+          name: "Inscription",
+          occurred_at: "2026-10-16T09:00:00Z",
+          async: false
+        )
+      ).to eq(:tracked)
+    end
+
+    it "returns false without enqueuing when sync_if forbids the sync" do
+      inst = klass.new
+      allow(inst).to receive(:allow_sync_for?).with(:hubspot).and_return(false)
+
+      expect(Etlify::EventJob).not_to receive(:perform_later)
+      expect(
+        inst.crm_track_event!(crm_name: :hubspot, name: "Inscription")
+      ).to be(false)
+    end
+
+    it "ignores sync_if when sync_first is false" do
+      inst = klass.new
+      allow(inst).to receive(:allow_sync_for?).with(:hubspot).and_return(false)
+
+      expect(Etlify::EventJob).to receive(:perform_later)
+      inst.crm_track_event!(
+        crm_name: :hubspot, name: "Inscription", sync_first: false
+      )
+    end
+
+    it "raises when the CRM is not configured on the model" do
+      inst = build_including_class.new
+      expect { inst.crm_track_event!(crm_name: :hubspot, name: "Inscription") }
+        .to raise_error(ArgumentError, "crm not configured for hubspot")
+    end
+
+    it "raises when the adapter does not support events" do
+      plain = build_including_class do
+        def self.etlify_crms
+          {hubspot: {adapter: Class.new.new}}
+        end
+      end
+
+      expect { plain.new.crm_track_event!(crm_name: :hubspot, name: "Inscription") }
+        .to raise_error(ArgumentError, "Adapter must respond to track_event!")
+    end
+
+    context "when the CRM is disabled" do
+      before do
+        allow(Etlify::CRM).to receive(:enabled?).with(:hubspot)
+                                                .and_return(false)
+      end
+
+      it "returns true without enqueuing or tracking" do
+        expect(Etlify::EventJob).not_to receive(:perform_later)
+        expect(Etlify::EventTracker).not_to receive(:call)
+
+        expect(
+          klass.new.crm_track_event!(crm_name: :hubspot, name: "Inscription")
+        ).to be(true)
       end
     end
   end
