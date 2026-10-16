@@ -5,7 +5,7 @@ require_relative "brevo/client"
 module Etlify
   module Adapters
     class BrevoAdapter
-      OBJECT_TYPES = %w[contacts].freeze
+      OBJECT_TYPES = ["contacts"].freeze
       IDENTIFIER_TYPES = {
         "email" => "email_id",
         "ext_id" => "ext_id",
@@ -215,7 +215,7 @@ module Etlify
       end
 
       def format_time(value)
-        value.respond_to?(:iso8601) ? value.iso8601 : value.to_s
+        value.is_a?(String) ? value : value.iso8601
       end
 
       def encode(segment)

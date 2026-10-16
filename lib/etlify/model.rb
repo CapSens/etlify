@@ -209,7 +209,7 @@ module Etlify
       end
 
       occurred_at ||= Time.current
-      occurred_at = occurred_at.iso8601 if occurred_at.respond_to?(:iso8601)
+      occurred_at = occurred_at.iso8601 unless occurred_at.is_a?(String)
 
       if async
         Etlify::EventJob.perform_later(

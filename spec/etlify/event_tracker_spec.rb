@@ -173,9 +173,12 @@ RSpec.describe Etlify::EventTracker do
 
   context "when the adapter does not support events" do
     it "raises ArgumentError" do
-      stub_crm(Etlify::Adapters::NullAdapter.new.tap { |a|
-        a.singleton_class.send(:undef_method, :track_event!)
-      })
+      sync_only_adapter = Class.new do
+        def upsert!(payload:, object_type:, match_property:, match_value:, crm_id: nil)
+          "crm-1"
+        end
+      end
+      stub_crm(sync_only_adapter.new)
 
       expect do
         described_class.call(user, crm_name: :brevo, name: "Inscription")
