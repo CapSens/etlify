@@ -123,4 +123,61 @@ RSpec.describe Etlify::EventJob do
     expect(scheduled.first[:at]).to be_a(Numeric)
     expect(cache.exist?(described_class.lock_key(*args))).to be(true)
   end
+
+  def scheduled_retries
+    aj_enqueued_jobs.select { |j| j[:job] == described_class && j[:at] }
+  end
+
+  {
+    "a transport error" => Etlify::TransportError.new("timeout", status: 0),
+    "a 429" => Etlify::RateLimited.new("slow down", status: 429),
+    "a 5xx" => Etlify::ApiError.new("server error", status: 500),
+    "a buffered sync" => Etlify::SyncError.new("buffered"),
+  }.each do |label, error|
+    it "schedules a retry on #{label}" do
+      allow(Etlify::EventTracker).to receive(:call).and_raise(error)
+
+      described_class.perform_later(*args)
+      perform_enqueued_event_jobs
+
+      expect(scheduled_retries.size).to eq(1)
+    end
+  end
+
+  {
+    "a 400" => Etlify::ApiError.new("invalid", status: 400),
+    "a 401" => Etlify::Unauthorized.new("unauthorized", status: 401),
+    "a 404" => Etlify::NotFound.new("not found", status: 404),
+    "a 422" => Etlify::ValidationFailed.new("invalid", status: 422),
+    "an invalid argument" => ArgumentError.new("name must be 1 to 255 characters"),
+  }.each do |label, error|
+    it "discards the job without retry on #{label}", :aggregate_failures do
+      allow(Etlify::EventTracker).to receive(:call).and_raise(error)
+
+      described_class.perform_later(*args)
+
+      expect { perform_enqueued_event_jobs }.not_to raise_error
+      expect(scheduled_retries).to eq([])
+      expect(cache.exist?(described_class.lock_key(*args))).to be(false)
+    end
+  end
+
+  [:skipped, :sync_failed].each do |result|
+    it "ends without retry when the tracker returns #{result.inspect}" do
+      allow(Etlify::EventTracker).to receive(:call).and_return(result)
+
+      described_class.perform_later(*args)
+      perform_enqueued_event_jobs
+
+      expect(scheduled_retries).to eq([])
+    end
+  end
+
+  it "lets an unexpected error through without retry" do
+    allow(Etlify::EventTracker).to receive(:call).and_raise(NoMethodError, "boom")
+
+    described_class.perform_later(*args)
+
+    expect { perform_enqueued_event_jobs }.to raise_error(NoMethodError, "boom")
+  end
 end

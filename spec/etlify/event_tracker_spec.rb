@@ -86,49 +86,55 @@ RSpec.describe Etlify::EventTracker do
       expect(adapter.events.first[:identifier_value]).to eq("crm-1")
     end
 
-    it "raises Etlify::SyncError without tracking when the sync fails",
-       :aggregate_failures do
+    it "returns :sync_failed without tracking when the sync fails, " \
+       "recording a single sync error", :aggregate_failures do
       failing = adapter_class.new
       def failing.upsert!(**)
         raise "boom"
       end
       stub_crm(failing)
 
-      expect do
-        described_class.call(user, crm_name: :brevo, name: "Inscription")
-      end.to raise_error(
-        Etlify::SyncError,
-        "Cannot track event Inscription: sync returned :error (boom)"
-      )
+      result = described_class.call(user, crm_name: :brevo, name: "Inscription")
+
+      expect(result).to eq(:sync_failed)
       expect(failing.events).to eq([])
+      line = user.crm_synchronisations.find_by(crm_name: "brevo")
+      expect(line.error_count).to eq(1)
+      expect(line.last_error).to eq("boom")
     end
 
-    [:skipped, :buffered].each do |result|
-      it "raises Etlify::SyncError when the sync returns #{result.inspect}",
-         :aggregate_failures do
-        stub_crm(adapter)
-        allow(Etlify::Synchronizer).to receive(:call).and_return(result)
-
-        expect do
-          described_class.call(user, crm_name: :brevo, name: "Inscription")
-        end.to raise_error(
-          Etlify::SyncError,
-          "Cannot track event Inscription: sync returned #{result.inspect}"
-        )
-        expect(adapter.events).to eq([])
-      end
-    end
-
-    it "raises Etlify::SyncError when the sync leaves no crm_id",
+    it "returns :skipped without tracking when sync_if refuses the sync",
        :aggregate_failures do
-      stub_crm(adapter_class.new(crm_id: nil))
+      stub_crm(adapter)
+      allow(Etlify::Synchronizer).to receive(:call).and_return(:skipped)
+
+      result = described_class.call(user, crm_name: :brevo, name: "Inscription")
+
+      expect(result).to eq(:skipped)
+      expect(adapter.events).to eq([])
+    end
+
+    it "raises Etlify::SyncError when the sync is buffered", :aggregate_failures do
+      stub_crm(adapter)
+      allow(Etlify::Synchronizer).to receive(:call).and_return(:buffered)
 
       expect do
         described_class.call(user, crm_name: :brevo, name: "Inscription")
       end.to raise_error(
         Etlify::SyncError,
-        "Cannot track event Inscription: sync returned :synced"
+        "Cannot track event Inscription: sync buffered until its dependencies are synced"
       )
+      expect(adapter.events).to eq([])
+    end
+
+    it "returns :sync_failed when the sync leaves no crm_id", :aggregate_failures do
+      no_id = adapter_class.new(crm_id: nil)
+      stub_crm(no_id)
+
+      result = described_class.call(user, crm_name: :brevo, name: "Inscription")
+
+      expect(result).to eq(:sync_failed)
+      expect(no_id.events).to eq([])
     end
   end
 
@@ -187,7 +193,7 @@ RSpec.describe Etlify::EventTracker do
   end
 
   context "when track_event! raises" do
-    it "wraps the error into Etlify::SyncError" do
+    it "lets the original error through" do
       failing = adapter_class.new
       def failing.track_event!(**)
         raise Etlify::RateLimited.new("slow down", status: 429)
@@ -196,7 +202,7 @@ RSpec.describe Etlify::EventTracker do
 
       expect do
         described_class.call(user, crm_name: :brevo, name: "Inscription")
-      end.to raise_error(Etlify::SyncError, "slow down")
+      end.to raise_error(Etlify::RateLimited, "slow down")
     end
   end
 end

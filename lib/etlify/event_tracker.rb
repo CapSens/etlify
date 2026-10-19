@@ -58,9 +58,25 @@ module Etlify
 
     def call
       return :disabled unless Etlify::CRM.enabled?(crm_name)
+      return track!(*match_by_identifier) unless sync_first
 
-      identifier_property, identifier_value = resolve_identifier
+      result = Etlify::Synchronizer.call(resource, crm_name: crm_name)
+      return :skipped if result == :skipped
 
+      if result == :buffered
+        raise Etlify::SyncError,
+              "Cannot track event #{name}: sync buffered until its dependencies are synced"
+      end
+
+      crm_id = sync_line&.crm_id
+      return :sync_failed unless result.in?([:synced, :not_modified]) && crm_id.present?
+
+      track!("crm_id", crm_id)
+    end
+
+    private
+
+    def track!(identifier_property, identifier_value)
       adapter.track_event!(
         name: name,
         identifier_property: identifier_property,
@@ -70,27 +86,6 @@ module Etlify
         occurred_at: occurred_at
       )
       :tracked
-    rescue => e
-      error = Etlify::SyncError.new(e.message)
-      error.set_backtrace(e.backtrace)
-      raise error
-    end
-
-    private
-
-    def resolve_identifier
-      return match_by_identifier unless sync_first
-
-      result = Etlify::Synchronizer.call(resource, crm_name: crm_name)
-      line = sync_line
-
-      unless result.in?([:synced, :not_modified]) && line&.crm_id.present?
-        raise Etlify::SyncError,
-              "Cannot track event #{name}: sync returned #{result.inspect}" \
-              "#{line&.last_error.present? ? " (#{line.last_error})" : ""}"
-      end
-
-      ["crm_id", line.crm_id]
     end
 
     def match_by_identifier

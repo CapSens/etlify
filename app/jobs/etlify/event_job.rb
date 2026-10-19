@@ -7,7 +7,8 @@ module Etlify
 
     ENQUEUE_LOCK_TTL = 15.minutes
 
-    retry_on StandardError, wait: 1.minute, attempts: 3
+    retry_on Etlify::TransportError, Etlify::ApiError, Etlify::SyncError, wait: 1.minute, attempts: 3
+    discard_on ArgumentError
 
     around_enqueue do |job, block|
       cache = Etlify.config.cache_store
@@ -67,6 +68,10 @@ module Etlify
         occurred_at: occurred_at,
         sync_first: sync_first
       )
+    rescue Etlify::ApiError => e
+      raise if e.is_a?(Etlify::RateLimited) || !e.status.to_i.between?(400, 499)
+
+      :discarded
     end
   end
 end
