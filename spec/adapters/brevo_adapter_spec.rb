@@ -67,26 +67,84 @@ RSpec.describe Etlify::Adapters::BrevoAdapter do
         expect(id).to eq("42")
       end
 
-      it "raises Etlify::NotFound when the contact no longer exists" do
-        allow(http).to receive(:request).and_return(
+      context "when the contact no longer exists" do
+        let(:not_found) do
           json_response(
             404, {code: "document_not_found", message: "Contact does not exist"}
           )
-        )
+        end
 
-        expect do
-          adapter.upsert!(
+        before do
+          allow(http).to receive(:request).with(
+            :put,
+            "https://api.brevo.com/v3/contacts/999?identifierType=contact_id",
+            anything
+          ).and_return(not_found)
+        end
+
+        it "PUTs the payload on the contact found by match_property",
+           :aggregate_failures do
+          expect(http).to receive(:request).with(
+            :get, get_url, headers: anything, body: nil
+          ).and_return(json_response(200, {id: 2}))
+          expect(http).to receive(:request).with(
+            :put,
+            "https://api.brevo.com/v3/contacts/2?identifierType=contact_id",
+            headers: anything,
+            body: json_body({"attributes" => {"PRENOM" => "Jane"}})
+          ).and_return(json_response(204))
+
+          id = adapter.upsert!(
             object_type: "contacts",
             payload: {attributes: {PRENOM: "Jane"}},
             match_property: "ext_id",
             match_value: "user-1",
             crm_id: "999"
           )
-        end.to raise_error(
-          Etlify::NotFound,
-          "Contact does not exist (status=404, path=/contacts/999, " \
-          "code=document_not_found)"
-        )
+
+          expect(id).to eq("2")
+        end
+
+        it "POSTs the payload when no contact matches either",
+           :aggregate_failures do
+          expect(http).to receive(:request).with(
+            :get, get_url, headers: anything, body: nil
+          ).and_return(json_response(404))
+          expect(http).to receive(:request).with(
+            :post,
+            "https://api.brevo.com/v3/contacts",
+            headers: anything,
+            body: json_body(
+              {"attributes" => {"PRENOM" => "Jane"}, "ext_id" => "user-1"}
+            )
+          ).and_return(json_response(201, {id: 3}))
+
+          id = adapter.upsert!(
+            object_type: "contacts",
+            payload: {attributes: {PRENOM: "Jane"}},
+            match_property: "ext_id",
+            match_value: "user-1",
+            crm_id: "999"
+          )
+
+          expect(id).to eq("3")
+        end
+
+        it "raises Etlify::NotFound when match_value is blank" do
+          expect do
+            adapter.upsert!(
+              object_type: "contacts",
+              payload: {attributes: {PRENOM: "Jane"}},
+              match_property: "ext_id",
+              match_value: " ",
+              crm_id: "999"
+            )
+          end.to raise_error(
+            Etlify::NotFound,
+            "Contact does not exist (status=404, path=/contacts/999, " \
+            "code=document_not_found)"
+          )
+        end
       end
     end
 
@@ -625,6 +683,22 @@ RSpec.describe Etlify::Adapters::BrevoAdapter do
 
       expect(Etlify::Synchronizer.call(user, crm_name: :brevo))
         .to eq(:not_modified)
+    end
+
+    it "replaces a dead crm_id with the id of the recreated contact",
+       :aggregate_failures do
+      user.crm_synchronisations.create!(crm_name: "brevo", crm_id: "498")
+      allow(http).to receive(:request).with(:put, anything, anything)
+        .and_return(json_response(404, {code: "document_not_found"}))
+      allow(http).to receive(:request).with(:get, anything, anything)
+        .and_return(json_response(404))
+      allow(http).to receive(:request).with(:post, anything, anything)
+        .and_return(json_response(201, {id: 8}))
+
+      expect(Etlify::Synchronizer.call(user, crm_name: :brevo)).to eq(:synced)
+      line = user.crm_synchronisations.find_by(crm_name: "brevo")
+      expect(line.crm_id).to eq("8")
+      expect(line.last_error).to be_nil
     end
   end
 end

@@ -63,8 +63,14 @@ module Etlify
         normalize_email!(properties)
 
         if contact_id
-          update_contact(contact_id, properties)
-          contact_id
+          begin
+            update_contact(contact_id, properties)
+            contact_id
+          rescue Etlify::NotFound
+            raise if crm_id.to_s.strip.empty? || value.empty?
+
+            upsert_by_match(properties, prop, value)
+          end
         else
           create_contact(properties, prop, value)
         end
@@ -157,6 +163,17 @@ module Etlify
         return nil if response[:status] == 404
 
         @client.raise_for_error!(response, path: path)
+      end
+
+      def upsert_by_match(properties, match_property, match_value)
+        contact_id = find_contact_id(match_property, match_value)
+
+        if contact_id
+          update_contact(contact_id, properties)
+          contact_id
+        else
+          create_contact(properties, match_property, match_value)
+        end
       end
 
       def update_contact(contact_id, properties)
