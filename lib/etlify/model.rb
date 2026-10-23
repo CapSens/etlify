@@ -88,6 +88,7 @@ module Etlify
         payload_m = "#{crm_name}_build_payload"
         sync_m    = "#{crm_name}_sync!"
         delete_m  = "#{crm_name}_delete!"
+        track_m   = "#{crm_name}_track_event!"
 
         unless klass.method_defined?(payload_m)
           klass.define_method(payload_m) do
@@ -104,6 +105,12 @@ module Etlify
         unless klass.method_defined?(delete_m)
           klass.define_method(delete_m) do
             crm_delete!(crm_name: crm_name)
+          end
+        end
+
+        unless klass.method_defined?(track_m)
+          klass.define_method(track_m) do |name, **options|
+            crm_track_event!(crm_name: crm_name, name: name, **options)
           end
         end
 
@@ -178,6 +185,54 @@ module Etlify
       return true unless Etlify::CRM.enabled?(crm_name)
 
       Etlify::Deleter.call(self, crm_name: crm_name)
+    end
+
+    def crm_track_event!(
+      crm_name: nil,
+      name: nil,
+      properties: {},
+      contact_properties: {},
+      occurred_at: nil,
+      async: true,
+      sync_first: true
+    )
+      raise ArgumentError, "crm_name is required" if crm_name.nil?
+      raise ArgumentError, "name is required" if name.to_s.strip.empty?
+      return true unless Etlify::CRM.enabled?(crm_name)
+
+      raise_unless_crm_is_configured(crm_name)
+      return false if sync_first && !allow_sync_for?(crm_name)
+
+      adapter = self.class.etlify_crms.fetch(crm_name.to_sym)[:adapter]
+      unless adapter.respond_to?(:track_event!)
+        raise ArgumentError, "Adapter must respond to track_event!"
+      end
+
+      occurred_at ||= Time.current
+      occurred_at = occurred_at.iso8601 unless occurred_at.is_a?(String)
+
+      if async
+        Etlify::EventJob.perform_later(
+          self.class.name,
+          id,
+          crm_name.to_s,
+          name.to_s,
+          properties,
+          contact_properties,
+          occurred_at,
+          sync_first
+        )
+      else
+        Etlify::EventTracker.call(
+          self,
+          crm_name: crm_name,
+          name: name.to_s,
+          properties: properties,
+          contact_properties: contact_properties,
+          occurred_at: occurred_at,
+          sync_first: sync_first
+        )
+      end
     end
 
     private

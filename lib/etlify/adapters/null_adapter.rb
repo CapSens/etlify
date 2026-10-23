@@ -45,6 +45,17 @@ module Etlify
       def batch_delete!(crm_ids:, object_type:)
         true
       end
+
+      def track_event!(
+        name:,
+        identifier_property:,
+        identifier_value:,
+        properties: {},
+        contact_properties: {},
+        occurred_at: nil
+      )
+        true
+      end
     end
   end
 end

@@ -1,3 +1,49 @@
+# UPGRADING FROM 0.15.1 -> UNRELEASED
+
+## 1. Overview
+
+No breaking change. This version adds:
+
+- `Etlify::Adapters::BrevoAdapter` (Brevo API v3 contacts and events).
+- CRM events: `<crm>_track_event!` / `crm_track_event!`, `Etlify::EventJob` and `Etlify::EventTracker`, and an optional `track_event!` method in the adapter contract.
+
+---
+
+## 2. Database migrations
+
+No database migration required for this upgrade.
+
+---
+
+## 3. Configuration changes
+
+None for existing CRMs. To use Brevo, register it (see `README.md`, "Brevo adapter (API v3)"):
+
+```ruby
+Etlify::CRM.register(
+  :brevo,
+  adapter: Etlify::Adapters::BrevoAdapter.new(api_key: ENV["BREVO_API_KEY"]),
+  options: {rate_limit: {max_requests: 8, period: 1}}
+)
+```
+
+---
+
+## 4. Expected behaviour after upgrading
+
+- Models including `Etlify::Model` get a new `<crm>_track_event!` helper for every registered CRM. It raises `ArgumentError` when the CRM adapter does not implement `track_event!`.
+- `Etlify::EventJob` runs on `Etlify.config.job_queue_name`, like `Etlify::SyncJob`.
+
+---
+
+## 5. Backward compatibility
+
+- No change to `upsert!`, `delete!`, `batch_upsert!`, `batch_update!` or `batch_delete!`.
+- `track_event!` is optional: existing custom adapters keep working.
+- `NullAdapter` now implements `track_event!` (returns `true`).
+
+---
+
 # UPGRADING FROM 0.15.0 -> 0.15.1
 
 ## 1. Overview

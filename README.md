@@ -20,10 +20,11 @@ Etlify sits beside your app; it does **not** try to own your domain or backgroun
 | ----------- | ------------------------------------------------------------- | --------------------------------------------------- |
 | DSL         | `include Etlify::Model` + `etlified_with(...)` on your models | Opt-in sync with a single line; clear, local intent |
 | Serialisers | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
-| Adapters    | HubSpot, Airtable & Intercom adapters included; plug your own | Swap CRMs without touching model code               |
+| Adapters    | HubSpot, Airtable, Intercom & Brevo adapters included; plug your own | Swap CRMs without touching model code               |
 | Idempotence | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
 | Jobs        | `crm_sync!` enqueues an ActiveJob; batch sync via `BatchSyncJob` | Fits your queue; built-in rate limiting              |
 | Delete      | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
+| Events      | `crm_track_event!` sends an event to the CRM through an `EventJob` | Triggers CRM automations from your app              |
 
 ---
 
@@ -322,6 +323,32 @@ user.crm_sync!(async: false)
 # Inline delete (not enqueued)
 user.hubspot_crm_delete! # or user.#{registered_crm_name}_crm_delete!
 ```
+
+### Track an event
+
+Adapters that implement the optional `track_event!` method (Brevo, Null) can receive events. The record is synced first, then the event is sent using the CRM id stored in `crm_synchronisations`:
+
+```ruby
+# Async by default (enqueues an Etlify::EventJob)
+user.brevo_track_event!(
+  "Inscription",
+  properties: {prenom: user.first_name},  # event properties
+  contact_properties: {},                 # optional contact attributes
+  occurred_at: Time.current               # defaults to the call time
+)
+
+# Run inline (no job)
+user.brevo_track_event!("Inscription", async: false)
+
+# Skip the preliminary sync and identify the contact through match_by
+user.brevo_track_event!("Inscription", sync_first: false)
+```
+
+- When the CRM is disabled, the call returns `true` and nothing is enqueued.
+- With `sync_first: true`, the `sync_if` guard applies as in `crm_sync!`: when it returns false, the call returns `false` and nothing is enqueued.
+- `occurred_at` is converted to ISO 8601 at call time, so a retried job keeps the original date.
+- With `sync_first: true` (default), `Etlify::EventTracker` runs `Etlify::Synchronizer` inline, then sends the event with `identifier_property: "crm_id"`. When the sync returns `:skipped` (the `sync_if` guard refuses it), the event is not sent and the call returns `:skipped`. When the sync fails or leaves no `crm_id`, the event is not sent and the call returns `:sync_failed`: the sync error is recorded once on the `crm_synchronisations` row, like a `SyncJob` failure, and the event is not retried. When the sync is `:buffered` (a `sync_dependencies` record has no `crm_id` yet), it raises `Etlify::SyncError` so that the job retries later.
+- `Etlify::EventJob` follows `Etlify::SyncJob`: same queue (`Etlify.config.job_queue_name`), same 15 minutes enqueue lock, `retry_on` with `wait: 1.minute, attempts: 3`. Only transient errors are retried: `Etlify::TransportError`, `Etlify::RateLimited`, 5xx `Etlify::ApiError` and a buffered sync. Other 4xx errors (`Unauthorized`, `NotFound`, `ValidationFailed`, `ApiError`) and `ArgumentError` (e.g. an invalid event name) end the job without retry. The lock key digests every job argument, `occurred_at` included (`Etlify::EventJob.lock_key`, same approach as `BatchSyncJob.lock_key`), so only the same occurrence enqueued twice within the window is deduplicated.
 
 ### Custom serializer example
 
@@ -765,6 +792,99 @@ Intercom returns errors as `{"type": "error.list", "errors": [{"code", "message"
 
 ---
 
+## Brevo adapter (API v3)
+
+Etlify ships with `Etlify::Adapters::BrevoAdapter` for Brevo (formerly Sendinblue). It uses `Net::HTTP` (no external dependency) and targets the Brevo API v3 contacts and events endpoints.
+
+### Configuration
+
+```ruby
+Etlify.configure do |config|
+  Etlify::CRM.register(
+    :brevo,
+    adapter: Etlify::Adapters::BrevoAdapter.new(
+      api_key: ENV["BREVO_API_KEY"]
+    ),
+    enabled: Rails.env.production?,
+    options: {
+      rate_limit: { max_requests: 8, period: 1 },
+    }
+  )
+end
+```
+
+Brevo documents a default limit of 10 requests per second on both `/v3/contacts` and `/v3/events` (20 or 60 on higher plans), and each response reports the account's actual limit in its `x-sib-ratelimit-limit` header. A single rate limiter is shared by all calls of a CRM, so keep `max_requests` below the lowest limit of the account.
+
+### Behaviour
+
+- `object_type`: only `"contacts"` is supported.
+- `match_by`: `email` or `ext_id`. The matching property is used to find the contact via `GET /v3/contacts/{value}?identifierType=email_id|ext_id`. The payload is synced as-is: the matching property is only written at creation time (when the payload does not already carry it) and never on an existing contact.
+- `crm_id`: if known, the adapter skips the search and `PUT`s directly on `/v3/contacts/{crm_id}?identifierType=contact_id`. Otherwise it `PUT`s on the contact found by the search, or `POST`s on `/v3/contacts` when none is found.
+- Payload: sent as-is, so the serializer builds the Brevo body itself (`attributes`, `ext_id`, `listIds`...). Put the email in `attributes.EMAIL`: Brevo accepts it on creation and update, while a top-level `email` is ignored on update. Brevo also silently ignores an attribute that does not exist on the account (the request still succeeds), so create the attributes in Brevo first and use their exact names.
+- A top-level `email` in the payload and an `email` matching value are lowercased, as in the HubSpot and Intercom adapters.
+- `delete!`: `DELETE /v3/contacts/{crm_id}?identifierType=contact_id`, returns `false` on 404.
+- No `batch_upsert!`/`batch_update!`: Brevo's bulk import (`POST /v3/contacts/import`) is asynchronous and returns a process id instead of contact ids, so `BatchSyncJob` falls back to its sequential per-record path. `batch_delete!` loops over `delete!`, as in the Intercom adapter.
+
+### Example: contact upsert by email, with your id as ext_id
+
+Brevo accounts often hold contacts created outside your app (newsletter forms, imports, a previous tool). Matching on `email` finds them on the first sync, and an `ext_id` carried by the payload is then written on the contact, which the matching contract allows. Matching on `ext_id` instead would miss those contacts and fail their creation with `400 duplicate_parameter` on every sync. Once the first sync has stored the Brevo id in `crm_synchronisations`, updates go by id, so a later email change keeps the link.
+
+```ruby
+class User < ApplicationRecord
+  include Etlify::Model
+
+  brevo_etlified_with(
+    serializer: UserBrevoSerializer,
+    crm_object_type: "contacts",
+    match_by: {property: :email, value: :email},
+    sync_if: ->(user) { user.email.present? }
+  )
+end
+
+class UserBrevoSerializer
+  def initialize(user)
+    @user = user
+  end
+
+  def as_crm_payload
+    {
+      ext_id: "user-#{@user.id}",
+      attributes: {
+        EMAIL: @user.email,
+        PRENOM: @user.first_name,
+        NOM: @user.last_name,
+      },
+    }
+  end
+end
+
+# Later
+user.brevo_sync!
+```
+
+### Events
+
+`track_event!` sends `POST /v3/events`:
+
+- `identifier_property`: `"email"` (`email_id`), `"ext_id"` (`ext_id`) or `"crm_id"` (`contact_id`).
+- `properties` are sent as `event_properties` and `contact_properties` as `contact_properties`, both as-is.
+- The event name must only contain alphanumeric characters, `-` and `_` (255 max).
+
+### Errors
+
+Brevo returns errors as `{"code": "...", "message": "..."}`. The adapter maps them to the standard Etlify hierarchy:
+
+| HTTP status | Raised class               |
+| ----------- | -------------------------- |
+| 401, 403    | `Etlify::Unauthorized`     |
+| 404         | `Etlify::NotFound`         |
+| 409, 422    | `Etlify::ValidationFailed` |
+| 429         | `Etlify::RateLimited`      |
+| other 4xx/5xx | `Etlify::ApiError`       |
+| transport   | `Etlify::TransportError`   |
+
+---
+
 ## Writing your own adapter
 
 Implement the following interface:
@@ -801,6 +921,13 @@ module Etlify
       # crm_id. records is an Array of {crm_id:, properties:} hashes; must
       # return an identity Hash {crm_id => crm_id}.
       # def batch_update!(object_type:, records:)
+      # end
+
+      # Optional, enables crm_track_event! / <crm>_track_event!.
+      # identifier_property is "crm_id" (sync_first) or the match_by
+      # property; must return true.
+      # def track_event!(name:, identifier_property:, identifier_value:,
+      #                  properties: {}, contact_properties: {}, occurred_at: nil)
       # end
     end
   end
@@ -896,6 +1023,7 @@ expect(fake_adapter).to have_received(:upsert!).with(
 - `Etlify::Adapters::HubspotV3Adapter` (API v3, with native batch support)
 - `Etlify::Adapters::AirtableV0Adapter` (API v0, with native batch support)
 - `Etlify::Adapters::IntercomAdapter` (REST API, sequential batch via single-record loop)
+- `Etlify::Adapters::BrevoAdapter` (API v3 contacts and events, sequential sync)
 
 ---
 
