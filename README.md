@@ -20,7 +20,7 @@ Etlify sits beside your app; it does **not** try to own your domain or backgroun
 | ----------- | ------------------------------------------------------------- | --------------------------------------------------- |
 | DSL         | `include Etlify::Model` + `etlified_with(...)` on your models | Opt-in sync with a single line; clear, local intent |
 | Serialisers | A base class to turn a model into a CRM payload               | Keeps mapping logic where it belongs; easy to test  |
-| Adapters    | HubSpot, Airtable & Intercom adapters included; plug your own | Swap CRMs without touching model code               |
+| Adapters    | HubSpot, Airtable, Intercom & Zoho CRM adapters included; plug your own | Swap CRMs without touching model code     |
 | Idempotence | Stable digest of the last synced payload                      | Avoids redundant API calls; safe to retry           |
 | Jobs        | `crm_sync!` enqueues an ActiveJob; batch sync via `BatchSyncJob` | Fits your queue; built-in rate limiting              |
 | Delete      | `crm_delete!` to remove a record from the CRM                 | Keeps both sides consistent                         |
@@ -215,7 +215,10 @@ end
 When a record fails to sync repeatedly (CRM misconfigured, server error, etc.),
 Etlify increments an `error_count` on its `CrmSynchronisation` row. Once the
 count reaches the configured limit, the record is **excluded** from
-`StaleRecords::Finder` automatic retries.
+`StaleRecords::Finder` automatic retries. `Etlify::RateLimited` is never
+counted: `Etlify::Synchronizer.call` returns `:rate_limited` and the job retries
+later (`SyncJob` through `retry_on`, `BatchSyncJob` by re-enqueuing the
+remaining records).
 
 The default limit is **3**. You can change it globally or per CRM:
 
@@ -310,7 +313,7 @@ user = User.find(1)
 
 # Async by default (enqueues an Etlify::SyncJob by default)
 # The job class can be overriden when registering the CRM
-user.hubspot_crm_sync! # or user.#{registered_crm_name}_crm_sync!
+user.hubspot_sync! # or user.#{registered_crm_name}_sync!
 
 # Run inline (no job)
 user.crm_sync!(async: false)
@@ -320,7 +323,7 @@ user.crm_sync!(async: false)
 
 ```ruby
 # Inline delete (not enqueued)
-user.hubspot_crm_delete! # or user.#{registered_crm_name}_crm_delete!
+user.hubspot_delete! # or user.#{registered_crm_name}_delete!
 ```
 
 ### Custom serializer example
@@ -565,7 +568,7 @@ class User < ApplicationRecord
 end
 
 # Later
-user.hubspot_crm_sync! # Adapter performs an upsert
+user.hubspot_sync! # Adapter performs an upsert
 ```
 
 ### Example: Custom object
@@ -654,7 +657,7 @@ class User < ApplicationRecord
 end
 
 # Later
-user.airtable_crm_sync!
+user.airtable_sync!
 ```
 
 ### Batch operations
@@ -731,7 +734,7 @@ class User < ApplicationRecord
 end
 
 # Later
-user.intercom_crm_sync!
+user.intercom_sync!
 ```
 
 ### Example: company upsert by company_id
@@ -762,6 +765,79 @@ Intercom returns errors as `{"type": "error.list", "errors": [{"code", "message"
 | transport   | `Etlify::TransportError`   |
 
 `delete!` returns `false` on 404 (already-gone) instead of raising, mirroring the HubSpot and Airtable adapters.
+
+---
+
+## Zoho CRM adapter (API v8)
+
+Etlify ships with `Etlify::Adapters::ZohoCrmAdapter`. It uses `Net::HTTP` (no external dependency) and targets the Zoho CRM REST API v8. `crm_object_type:` is the **module API name** (`"Contacts"`, `"Leads"`, `"Accounts"`, or a custom module), and payload keys are **field API names** (`Last_Name`, `Email`, …).
+
+### Configuration
+
+Zoho access tokens expire after one hour, so the adapter is built from a long-lived **refresh token** and obtains access tokens itself. Create a *Self Client* in the [Zoho API Console](https://api-console.zoho.com/), generate a grant token with the `ZohoCRM.modules.ALL` scope, and exchange it once for a refresh token.
+
+```ruby
+Etlify.configure do |config|
+  Etlify::CRM.register(
+    :zoho,
+    adapter: Etlify::Adapters::ZohoCrmAdapter.new(
+      client_id: ENV["ZOHO_CLIENT_ID"],
+      client_secret: ENV["ZOHO_CLIENT_SECRET"],
+      refresh_token: ENV["ZOHO_REFRESH_TOKEN"],
+      data_center: :eu,    # :us (default), :eu, :in, :au, :jp, :ca, :cn, :sa
+      api_version: "v8"    # default
+    ),
+    options: {
+      rate_limit: { max_requests: 10, period: 1.second },
+    }
+  )
+end
+```
+
+`data_center` must be the one hosting your Zoho organisation: it selects both the API server (`www.zohoapis.<dc>`) and the Accounts server issuing tokens (`accounts.zoho.<dc>`).
+
+**Access token sharing.** A refresh token only keeps a limited number of access tokens alive at once: Zoho revokes the oldest beyond that. If every worker process refreshed on its own, they would revoke each other's tokens. The token is therefore stored in `Etlify.config.cache_store` (read when the adapter is built) and reused by every process sharing that store. Use a store shared across processes (Redis, Memcached) in production. Pass `token_cache:` to pick another store, or `token_cache: false` to keep the token per process. When Zoho rejects a token (`INVALID_TOKEN`), the adapter refreshes it and retries the call once.
+
+### Behaviour
+
+- `match_by`: records without a `crm_id` go through Zoho's native `POST /{module}/upsert` with the matching property as the only `duplicate_check_fields`. Zoho finds the existing record **server side**. The adapter deliberately avoids the search API, whose index lags behind writes: a record created a moment earlier would not be found and would be created twice.
+- The matching property must therefore be a field Zoho accepts as a duplicate check field: a system unique field (`Email` on Contacts and Leads, `Account_Name` on Accounts, …) or a custom field marked **"Do not allow duplicate values"**. Otherwise Zoho rejects the call: `ValidationFailed` when the refusal comes as a record entry inside `data`, or the class matching the HTTP status (usually `ApiError`) when Zoho rejects the request as a whole. In a batch, both send `BatchSyncJob` to its sequential fallback.
+- The payload is synced as-is. Because the upsert endpoint reads the duplicate check value from the record, the matching value is injected into the record when the payload does not carry it (as with Airtable). On a matched record, Zoho rewrites the field with the value it was matched on.
+- `crm_id`: if known, the adapter skips matching and `PUT`s on `/{module}/{crm_id}`.
+- Batch operations use the native endpoints, 100 records per call (auto-sliced): `batch_upsert!` (`POST /{module}/upsert`), `batch_update!` (`PUT /{module}`), `batch_delete!` (`DELETE /{module}?ids=…`).
+- Zoho workflows, approvals and blueprints fire as they would for any API write.
+
+### Example: contact upsert by email
+
+```ruby
+class User < ApplicationRecord
+  include Etlify::Model
+
+  zoho_etlified_with(
+    serializer: UserZohoSerializer, # {Last_Name:, First_Name:, Email:, ...}
+    crm_object_type: "Contacts",
+    match_by: {property: :Email, value: ->(user) { user.email }}
+  )
+end
+
+# Later
+user.zoho_sync!
+```
+
+### Errors
+
+Zoho reports failures **per record**, inside `data`, sometimes behind a 2xx status. Any failed record raises `Etlify::ValidationFailed` with the Zoho `code` and `details` (for instance `{"api_name": "Last_Name"}` or `{"json_path": "$.data[3].Email"}`). In a batch, this sends `BatchSyncJob` to its sequential fallback, which isolates the offending record. Replaying the batch record by record is safe because matching happens server side. Request-wide failures map to the standard hierarchy:
+
+| HTTP status | Raised class               |
+| ----------- | -------------------------- |
+| 401, 403    | `Etlify::Unauthorized`     |
+| 404         | `Etlify::NotFound`         |
+| 409, 422    | `Etlify::ValidationFailed` |
+| 429         | `Etlify::RateLimited`      |
+| other 4xx/5xx | `Etlify::ApiError`       |
+| transport   | `Etlify::TransportError`   |
+
+A failed token refresh raises `Etlify::Unauthorized` (or `RateLimited` / `ApiError` on 429 / 5xx). Exceeding Zoho's quota of 10 refreshes per 10 minutes per refresh token (`{"error": "Access Denied"}` behind a 200) raises `RateLimited`, whose `retry_after` (60 seconds) delays the `BatchSyncJob` re-enqueue (`SyncJob` ignores it and retries after a fixed minute, up to 3 attempts). `delete!` returns `false` when the record does not exist (`INVALID_DATA` or 404), and `batch_delete!` treats such ids as already deleted.
 
 ---
 
@@ -896,6 +972,7 @@ expect(fake_adapter).to have_received(:upsert!).with(
 - `Etlify::Adapters::HubspotV3Adapter` (API v3, with native batch support)
 - `Etlify::Adapters::AirtableV0Adapter` (API v0, with native batch support)
 - `Etlify::Adapters::IntercomAdapter` (REST API, sequential batch via single-record loop)
+- `Etlify::Adapters::ZohoCrmAdapter` (API v8, OAuth refresh token, with native batch support)
 
 ---
 

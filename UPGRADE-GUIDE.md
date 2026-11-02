@@ -1,3 +1,93 @@
+# UPGRADING FROM 0.15.1 -> UNRELEASED
+
+## 1. Overview
+
+No configuration change, no migration. This release adds a new adapter,
+`Etlify::Adapters::ZohoCrmAdapter`, for the Zoho CRM REST API (v8 by default).
+
+One behavior change applies to every CRM: `Etlify::Synchronizer` no longer
+records `Etlify::RateLimited` as a record error. It returns `:rate_limited`
+instead of `:error`, so `SyncJob` retries through `retry_on` and `BatchSyncJob`
+re-enqueues the remaining records, and a rate-limit window can no longer push
+records past `max_sync_errors`. Code checking the result of
+`crm_sync!(async: false)` for `:error` should handle `:rate_limited` too.
+
+---
+
+## 2. Database migrations
+
+No database migration required for this upgrade.
+
+---
+
+## 3. Configuration changes
+
+Nothing to change for existing CRMs. To sync with Zoho, register the adapter
+with an OAuth refresh token (see the README, "Zoho CRM adapter"):
+
+```ruby
+Etlify::CRM.register(
+  :zoho,
+  adapter: Etlify::Adapters::ZohoCrmAdapter.new(
+    client_id: ENV["ZOHO_CLIENT_ID"],
+    client_secret: ENV["ZOHO_CLIENT_SECRET"],
+    refresh_token: ENV["ZOHO_REFRESH_TOKEN"],
+    data_center: :eu
+  )
+)
+```
+
+- `crm_object_type:` is the module API name (`"Contacts"`, `"Leads"`, a custom
+  module).
+- The `match_by` property must be a field Zoho accepts as a duplicate check
+  field (a system unique field such as `Email`, or a custom field marked "Do
+  not allow duplicate values"). Matching goes through Zoho's native upsert, not
+  the search API.
+- Access tokens are shared across processes through `Etlify.config.cache_store`.
+  Use a store shared by every worker (Redis, Memcached) in production, or pass
+  `token_cache:` to the adapter to pick another one.
+
+---
+
+## 4. Expected behaviour after upgrading
+
+Unchanged for HubSpot, Airtable and Intercom, except when the CRM answers 429.
+All three adapters raise `Etlify::RateLimited` on it, so the following applies
+to them as well as to Zoho:
+
+- **No more errors recorded for a quota.** A rate-limited sync leaves
+  `last_error` and `error_count` untouched. Expect fewer rows in
+  `CrmSynchronisation.with_error` after a rate-limit window, and no record
+  excluded from `StaleRecords::Finder` because of one.
+- **`crm_sync!(async: false)` returns `:rate_limited`** where it returned
+  `:error`.
+- **`SyncJob` retries.** It used to complete without error, the failure being
+  absorbed by the synchronizer. It now raises `Etlify::RateLimited`, so
+  `retry_on` schedules up to 3 attempts one minute apart. Once they are
+  exhausted, the error reaches your queue backend like any other job failure:
+  expect `RateLimited` failures in its dashboard and error tracker during
+  sustained rate limiting.
+- **`BatchSyncJob` re-enqueues the remaining records** in sequential mode
+  (adapters without batch endpoints) instead of moving on to the next record.
+- **`StaleRecords::BatchSync` in inline mode stops** processing a model's stale
+  records at the first rate-limited one. They are not counted, and the next run
+  picks them up.
+
+---
+
+## 5. Backward compatibility
+
+- No DSL change, no migration.
+- `Etlify::Synchronizer.call` and `crm_sync!(async: false)` can return a new
+  value, `:rate_limited`. Code that branches on the result, typically
+  `result == :error`, should handle it.
+- `SyncJob` can now fail with `Etlify::RateLimited` where it used to succeed.
+- `Etlify::RateLimited.new` accepts an optional `retry_after:` (seconds). The
+  existing signature still works.
+- The new adapter is loaded with the others but does nothing until registered.
+
+---
+
 # UPGRADING FROM 0.15.0 -> 0.15.1
 
 ## 1. Overview

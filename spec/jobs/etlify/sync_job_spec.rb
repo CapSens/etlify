@@ -134,6 +134,18 @@ RSpec.describe Etlify::SyncJob do
     expect(cache.exist?(key)).to be(true)
   end
 
+  it "schedules a retry when the Synchronizer is rate limited", :aggregate_failures do
+    expect(Etlify::Synchronizer).to receive(:call).and_return(:rate_limited)
+
+    described_class.perform_later("User", user.id, hubspot_crm)
+    aj_perform_enqueued_jobs
+
+    scheduled = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+    expect(scheduled.size).to eq(1)
+    expect(scheduled.first[:args]).to eq(["User", user.id, hubspot_crm])
+    expect(scheduled.first[:at]).to be_a(Numeric)
+  end
+
   it "re-enqueues after TTL expiry", :aggregate_failures do
     key = lock_key_for("User", user.id, "hubspot")
     cache.delete(key)

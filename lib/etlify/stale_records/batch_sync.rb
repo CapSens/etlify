@@ -113,6 +113,9 @@ module Etlify
           next if guard && !guard.call(record)
 
           service = Etlify::Synchronizer.call(record, crm_name: crm_name)
+          # The quota holds for every remaining record: the next run picks them up.
+          break if service == :rate_limited
+
           count += 1
           errors += 1 if service == :error
         end

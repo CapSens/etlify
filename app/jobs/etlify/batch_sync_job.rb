@@ -128,12 +128,12 @@ module Etlify
         record = model_name.constantize.find_by(id: id)
         next unless record
 
-        Etlify::Synchronizer.call(record, crm_name: crm_name)
-      rescue Etlify::RateLimited => e
-        remaining = pairs[index..]
-        wait = extract_retry_after(e)
-        reenqueue(crm_name, remaining, wait: wait)
-        break
+        result = Etlify::Synchronizer.call(record, crm_name: crm_name)
+
+        if result == :rate_limited
+          reenqueue(crm_name, pairs[index..], wait: DEFAULT_RETRY_AFTER)
+          break
+        end
       rescue => _e
         next
       end
@@ -154,11 +154,8 @@ module Etlify
     end
 
     def extract_retry_after(error)
-      if error.respond_to?(:raw) && error.raw.is_a?(String)
-        # HubSpot sometimes includes Retry-After in headers
-        # but we only have the body here; use default
-      end
-      DEFAULT_RETRY_AFTER
+      retry_after = error.retry_after.to_i
+      retry_after.positive? ? retry_after : DEFAULT_RETRY_AFTER
     end
 
     def reenqueue(crm_name, remaining_pairs, wait:)

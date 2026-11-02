@@ -115,6 +115,22 @@ RSpec.describe Etlify::BatchSyncJob do
       expect(jobs.first[:args][0]).to eq("hubspot")
     end
 
+    it "re-enqueues after the delay carried by RateLimited", :aggregate_failures do
+      user = create_user!(index: 1)
+
+      allow_any_instance_of(Etlify::Adapters::NullAdapter)
+        .to receive(:batch_upsert!)
+        .and_raise(Etlify::RateLimited.new("refresh quota", status: 200, retry_after: 60))
+
+      freeze_time do
+        described_class.perform_now("hubspot", ["User", user.id])
+
+        jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+        expect(jobs.size).to eq(1)
+        expect(jobs.first[:at]).to be_within(1).of(60.seconds.from_now.to_f)
+      end
+    end
+
     it "keeps the re-enqueued job's lock alive when pairs are identical",
        :aggregate_failures do
       user1 = create_user!(index: 1)
@@ -179,8 +195,7 @@ RSpec.describe Etlify::BatchSyncJob do
       user = create_user!(index: 1)
       pairs = ["User", user.id]
 
-      allow(Etlify::Synchronizer).to receive(:call)
-        .and_raise(Etlify::RateLimited.new("rate limited", status: 429))
+      allow(Etlify::Synchronizer).to receive(:call).and_return(:rate_limited)
 
       described_class.perform_later("seq_crm", pairs)
       expect(cache.exist?(chunk_lock_key("seq_crm", pairs))).to be(true)
@@ -263,8 +278,7 @@ RSpec.describe Etlify::BatchSyncJob do
       user2 = create_user!(index: 2)
       pairs = ["User", user1.id, "User", user2.id]
 
-      allow(Etlify::Synchronizer).to receive(:call)
-        .and_raise(Etlify::RateLimited.new("rate limited", status: 429))
+      allow(Etlify::Synchronizer).to receive(:call).and_return(:rate_limited)
 
       described_class.perform_now("seq_crm", pairs)
 
@@ -274,6 +288,36 @@ RSpec.describe Etlify::BatchSyncJob do
 
       re_enqueued_pairs = jobs.first[:args][1].each_slice(2).to_a
       expect(re_enqueued_pairs.size).to eq(2)
+
+      Etlify::CRM.registry.delete(:seq_crm)
+    end
+
+    it "re-enqueues without bumping error_count when the adapter is rate limited in sequential mode",
+       :aggregate_failures do
+      rate_limited_adapter = Object.new
+      rate_limited_adapter.define_singleton_method(:upsert!) do |**_|
+        raise Etlify::RateLimited.new("rate limited", status: 429)
+      end
+      rate_limited_adapter.define_singleton_method(:delete!) { |**_| true }
+
+      Etlify::CRM.register(:seq_crm, adapter: rate_limited_adapter)
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          seq_crm: {
+            adapter: rate_limited_adapter,
+            match_by: {property: :email, value: :email},
+            crm_object_type: "contacts",
+          },
+        }
+      )
+
+      user = create_user!(index: 1)
+
+      described_class.perform_now("seq_crm", ["User", user.id])
+
+      jobs = aj_enqueued_jobs.select { |j| j[:job] == described_class }
+      expect(jobs.size).to eq(1)
+      expect(CrmSynchronisation.find_by(resource: user, crm_name: "seq_crm")&.error_count.to_i).to eq(0)
 
       Etlify::CRM.registry.delete(:seq_crm)
     end

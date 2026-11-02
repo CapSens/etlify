@@ -345,6 +345,19 @@ RSpec.describe Etlify::StaleRecords::BatchSync do
       end
     end
 
+    it "stops processing the CRM once the Synchronizer is rate limited", :aggregate_failures do
+      create_user!(index: 1)
+      create_user!(index: 2)
+      create_user!(index: 3)
+
+      expect(Etlify::Synchronizer).to receive(:call).once.and_return(:rate_limited)
+
+      stats = described_class.call(async: false, batch_size: 10)
+
+      expect(stats[:total]).to eq(0)
+      expect(stats[:errors]).to eq(0)
+    end
+
     it "restricts to the provided crm_name when passed" do
       allow(User).to receive(:etlify_crms).and_return(
         {

@@ -50,7 +50,10 @@ module Etlify
       record = model.find_by(id: id)
       return unless record
 
-      Etlify::Synchronizer.call(record, crm_name: crm_name.to_sym)
+      result = Etlify::Synchronizer.call(record, crm_name: crm_name.to_sym)
+
+      # Raised so retry_on schedules the next attempt.
+      raise Etlify::RateLimited.new("CRM rate limit reached", status: 429) if result == :rate_limited
     end
 
     private

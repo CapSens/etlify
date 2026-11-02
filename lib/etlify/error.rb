@@ -35,7 +35,17 @@ module Etlify
   class ApiError < Error; end
   class Unauthorized < ApiError; end            # 401/403
   class NotFound < ApiError; end                # 404
-  class RateLimited < ApiError; end             # 429
+  # 429
+  class RateLimited < ApiError
+    # Seconds to wait before retrying, when the raiser knows the quota
+    # window better than BatchSyncJob's default (nil otherwise).
+    attr_reader :retry_after
+
+    def initialize(message, retry_after: nil, **options)
+      super(message, **options)
+      @retry_after = retry_after
+    end
+  end
   class ValidationFailed < ApiError; end        # 409/422
 
   # Internal errors
