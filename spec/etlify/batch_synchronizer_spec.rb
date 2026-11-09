@@ -27,6 +27,28 @@ RSpec.describe Etlify::BatchSynchronizer do
   end
 
   describe ".call" do
+    it "finds the crm_id of an STI dependency, stored under its base class", :aggregate_failures do
+      startup = Startup.create!(name: "Brique", domain: "brique.eu")
+      CrmSynchronisation.create!(crm_name: "hubspot", crm_id: "hubspot-startup-1", resource: startup)
+      user = User.create!(email: "user@example.com", full_name: "User", company: startup)
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: adapter,
+            match_by: {property: :email, value: :email},
+            crm_object_type: "contacts",
+            guard: nil,
+            sync_dependencies: [:company],
+          },
+        }
+      )
+
+      stats = described_class.call([user], crm_name: :hubspot)
+
+      expect(stats).to include(synced: 1, buffered: 0)
+      expect(Etlify::PendingSync.count).to eq(0)
+    end
+
     it "batch upserts all records and updates sync_lines" do
       user1 = create_user!(index: 1)
       user2 = create_user!(index: 2)

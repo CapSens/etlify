@@ -307,9 +307,10 @@ module Etlify
       end
     end
 
+    # The sync line of an STI record is stored under its base class (see Synchronizer).
     def dependency_has_crm_id?(dep)
       dep_sync = CrmSynchronisation.find_by(
-        resource_type: dep.class.name,
+        resource_type: dep.class.polymorphic_name,
         resource_id: dep.id,
         crm_name: @crm_name.to_s
       )
