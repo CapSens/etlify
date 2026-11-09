@@ -94,6 +94,7 @@ RSpec.configure do |config|
       create_table :companies, force: true do |t|
         t.string :name
         t.string :domain
+        t.string :type
         t.timestamps
       end
 
@@ -116,6 +117,9 @@ RSpec.configure do |config|
 
     class Company < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock
       has_many :crm_synchronisations, as: :resource, dependent: :destroy
+    end
+
+    class Startup < Company # rubocop:disable Lint/ConstantDefinitionInBlock
     end
 
     class User < ApplicationRecord # rubocop:disable Lint/ConstantDefinitionInBlock

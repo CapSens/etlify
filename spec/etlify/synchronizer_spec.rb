@@ -331,6 +331,27 @@ RSpec.describe Etlify::Synchronizer do
       result = described_class.call(user, crm_name: :hubspot)
       expect(result).to eq(:synced)
     end
+
+    it "finds the crm_id of an STI dependency, stored under its base class", :aggregate_failures do
+      startup = Startup.create!(name: "Brique", domain: "brique.eu")
+      user.update!(company: startup)
+      CrmSynchronisation.create!(crm_name: "hubspot", crm_id: "hubspot-startup-1", resource: startup)
+
+      allow(User).to receive(:etlify_crms).and_return(
+        {
+          hubspot: {
+            adapter: Etlify::Adapters::NullAdapter.new,
+            match_by: {property: :id, value: :id},
+            crm_object_type: "contacts",
+            sync_dependencies: [:company],
+          },
+        }
+      )
+
+      expect(CrmSynchronisation.find_by(crm_id: "hubspot-startup-1").resource_type).to eq("Company")
+      expect(described_class.call(user.reload, crm_name: :hubspot)).to eq(:synced)
+      expect(Etlify::PendingSync.count).to eq(0)
+    end
   end
 
   context "sync_dependencies legacy fallback" do

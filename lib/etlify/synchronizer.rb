@@ -144,9 +144,11 @@ module Etlify
 
     # Check if a dependency already has a CRM id, either via CrmSynchronisation
     # (etlified models) or via a direct column like `airtable_id` (legacy models).
+    # The sync line of an STI record is stored under its base class, as for any
+    # polymorphic association: looking it up under the subclass would never find it.
     def dependency_has_crm_id?(dep)
       dep_sync = CrmSynchronisation.find_by(
-        resource_type: dep.class.name,
+        resource_type: dep.class.polymorphic_name,
         resource_id: dep.id,
         crm_name: crm_name.to_s
       )
